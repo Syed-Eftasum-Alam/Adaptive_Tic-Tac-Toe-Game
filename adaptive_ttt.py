@@ -1,1336 +1,1400 @@
 import pygame
-import random
 import numpy as np
-from collections import defaultdict
+import random
+from collections import defaultdict, deque
 
 # ============================================================
-# ADAPTIVE TIC-TAC-TOE USING Q-LEARNING
-# ============================================================
-# Player = X
-# RL Agent = O
-#
-# IMPORTANT:
-# This version automatically plays MANY episodes.
-# The RL agent becomes harder according to the player's skill.
-#
-# Difficulty increases through:
-#   1. Less random exploration
-#   2. Stronger use of learned Q-values
-#   3. Tactical move selection at higher difficulty
-#   4. Difficulty level displayed live
-#
-# The Q-table is NOT reset between games.
-#
-# Install:
-#     pip install pygame numpy
-#
-# Run:
-#     python adaptive_tictactoe_rl_adaptive.py
+# Adaptive 4x4 Tic-Tac-Toe using Q-Learning
+# Rule: 3 consecutive marks are enough to win
+# Session: exactly 25 episodes, then a detailed analytics dashboard
+# Player: X
+# RL Agent: O
 # ============================================================
 
 pygame.init()
 
-WIDTH = 1200
-HEIGHT = 700
+# ---------------------- Window / Layout ----------------------
+WIDTH, HEIGHT = 1400, 900
+BOARD_SIZE = 640
+GRID_SIZE = 4
+CELL_SIZE = BOARD_SIZE // GRID_SIZE
 
-BOARD_SIZE = 540
-CELL_SIZE = BOARD_SIZE // 3
-BOARD_X = 30
-BOARD_Y = 80
+BOARD_X = 45
+BOARD_Y = 125
 
-PANEL_X = 610
-PANEL_WIDTH = 560
+PANEL_X = 735
+PANEL_Y = 80
+PANEL_W = 620
+PANEL_H = 780
 
 screen = pygame.display.set_mode((WIDTH, HEIGHT))
-pygame.display.set_caption("Adaptive Tic-Tac-Toe - RL Dynamic Difficulty")
-
+pygame.display.set_caption("Adaptive 4x4 Tic-Tac-Toe - Q Learning Analytics")
 clock = pygame.time.Clock()
 
-# ------------------------------------------------------------
-# Fonts
-# ------------------------------------------------------------
-font = pygame.font.SysFont("arial", 20)
-small_font = pygame.font.SysFont("arial", 16)
-medium_font = pygame.font.SysFont("arial", 25)
-large_font = pygame.font.SysFont("arial", 36)
+# ---------------------- Fonts ----------------------
+FONT_TITLE = pygame.font.SysFont("arial", 38, bold=True)
+FONT_BIG = pygame.font.SysFont("arial", 31, bold=True)
+FONT_MED = pygame.font.SysFont("arial", 23, bold=True)
+FONT = pygame.font.SysFont("arial", 19)
+FONT_SMALL = pygame.font.SysFont("consolas", 16)
+FONT_TINY = pygame.font.SysFont("consolas", 14)
 
-# ------------------------------------------------------------
-# Colors
-# ------------------------------------------------------------
-WHITE = (245, 245, 245)
-BLACK = (25, 25, 25)
-GRAY = (120, 120, 120)
-LIGHT_GRAY = (230, 230, 230)
-BLUE = (40, 100, 220)
-RED = (215, 60, 60)
-GREEN = (45, 160, 90)
-PURPLE = (125, 70, 180)
-ORANGE = (220, 140, 35)
+# ---------------------- Colors ----------------------
+BG = (24, 27, 34)
+PANEL_BG = (34, 38, 47)
+CARD_BG = (42, 47, 58)
+GRID_COLOR = (210, 214, 222)
+X_COLOR = (80, 180, 255)
+O_COLOR = (255, 110, 135)
+TEXT = (242, 244, 248)
+MUTED = (166, 174, 188)
+GREEN = (88, 220, 145)
+YELLOW = (245, 206, 88)
+RED = (245, 100, 100)
+BLUE = (90, 170, 255)
+PURPLE = (188, 130, 255)
+CYAN = (80, 220, 220)
+BAR_BG = (70, 76, 90)
+BORDER = (72, 80, 96)
+OVERLAY = (10, 12, 16)
 
-# ============================================================
-# Q-LEARNING
-# ============================================================
+# ---------------------- RL Settings ----------------------
+PLAYER = "X"
+AGENT = "O"
+EMPTY = "."
 
-Q = defaultdict(lambda: np.zeros(9, dtype=float))
-
-ALPHA = 0.35
+ALPHA = 0.30
 GAMMA = 0.90
-
-# Exploration decreases over time.
-epsilon = 1.0
+EPSILON_START = 1.00
 EPSILON_MIN = 0.05
-EPSILON_DECAY = 0.965
+EPSILON_DECAY = 0.95
 
-# ============================================================
-# GAME VARIABLES
-# ============================================================
+TOTAL_EPISODES = 25
 
-board = [" "] * 9
+Q = defaultdict(lambda: np.zeros(GRID_SIZE * GRID_SIZE, dtype=np.float32))
 
-current_turn = "X"
+# ---------------------- Winning Lines ----------------------
+WINNING_LINES = []
 
-game_over = False
-winner = None
+# Horizontal
+for r in range(4):
+    for c in range(2):
+        WINNING_LINES.append([r * 4 + c, r * 4 + c + 1, r * 4 + c + 2])
 
-episode = 1
+# Vertical
+for c in range(4):
+    for r in range(2):
+        WINNING_LINES.append([r * 4 + c, (r + 1) * 4 + c, (r + 2) * 4 + c])
 
+# Diagonal down-right
+for r in range(2):
+    for c in range(2):
+        WINNING_LINES.append([
+            r * 4 + c,
+            (r + 1) * 4 + c + 1,
+            (r + 2) * 4 + c + 2
+        ])
+
+# Diagonal down-left
+for r in range(2):
+    for c in range(2, 4):
+        WINNING_LINES.append([
+            r * 4 + c,
+            (r + 1) * 4 + c - 1,
+            (r + 2) * 4 + c - 2
+        ])
+
+# ---------------------- Game State ----------------------
+board = [EMPTY] * 16
+
+epsilon = EPSILON_START
+session_results = []
 player_wins = 0
 agent_wins = 0
 draws = 0
 
-# Recent results are used to estimate player skill.
-recent_results = []
-
-# Number of completed games used for skill estimation.
-SKILL_WINDOW = 10
-
-# Difficulty:
-# 1 = Very Easy
-# 2 = Easy
-# 3 = Normal
-# 4 = Hard
-# 5 = Expert
-difficulty = 1
-
+player_skill = 50
 difficulty_name = "Very Easy"
+difficulty_level = 1
 
-# RL information
-previous_state = None
-previous_action = None
+session_finished = False
+game_over = False
+next_game_time = 0
+winning_line = None
 
-last_state = "---------"
-last_action = "-"
-last_reward = 0
+last_agent_state = None
+last_agent_action = None
 
-q_before = 0.0
-q_after = 0.0
+last_action_info = {
+    "state": "",
+    "action": "-",
+    "reward": 0,
+    "q_before": 0.0,
+    "q_after": 0.0,
+    "delta": 0.0
+}
 
-update_history = []
+recent_updates = deque(maxlen=10)
 
-message = "You are X. Make your first move."
+# ---------------------- Analytics History ----------------------
+episode_history = []
+current_episode_q_changes = []
+total_q_updates = 0
+previous_episode_skill = 50
 
-# Time before automatically starting the next game.
-game_end_timer = 0
-AUTO_RESTART_DELAY = 2.0
+# ---------------------- Utility Functions ----------------------
 
-
-# ============================================================
-# BOARD FUNCTIONS
-# ============================================================
-
-def board_to_state():
-    return "".join(
-        "." if c == " " else c
-        for c in board
-    )
-
-
-def available_moves():
-    return [
-        i for i in range(9)
-        if board[i] == " "
-    ]
+def board_to_state(b):
+    return "".join(b)
 
 
-def check_winner():
-    winning_lines = [
-        (0, 1, 2),
-        (3, 4, 5),
-        (6, 7, 8),
-        (0, 3, 6),
-        (1, 4, 7),
-        (2, 5, 8),
-        (0, 4, 8),
-        (2, 4, 6)
-    ]
-
-    for a, b, c in winning_lines:
-
-        if (
-            board[a] != " "
-            and board[a] == board[b]
-            and board[b] == board[c]
-        ):
-            return board[a]
-
-    if not available_moves():
-        return "Draw"
-
-    return None
+def available_actions(b):
+    return [i for i, v in enumerate(b) if v == EMPTY]
 
 
-# ============================================================
-# DIFFICULTY SYSTEM
-# ============================================================
+def check_winner(b, mark):
+    for line in WINNING_LINES:
+        if all(b[i] == mark for i in line):
+            return True, line
+    return False, None
 
-def calculate_difficulty():
-    """
-    Dynamically determine difficulty from recent player results.
 
-    The agent becomes harder when the player repeatedly performs well.
+def is_draw(b):
+    player_win, _ = check_winner(b, PLAYER)
+    agent_win, _ = check_winner(b, AGENT)
+    return EMPTY not in b and not player_win and not agent_win
 
-    Player win rate over recent games:
-        >= 80% -> Expert
-        >= 65% -> Hard
-        >= 45% -> Normal
-        >= 25% -> Easy
-        < 25%  -> Very Easy
 
-    The difficulty also considers the number of games played.
-    """
+def reset_board():
+    global board, game_over, last_agent_state, last_agent_action
+    global winning_line, current_episode_q_changes
 
-    if len(recent_results) < 3:
-        return 1
+    board = [EMPTY] * 16
+    game_over = False
+    last_agent_state = None
+    last_agent_action = None
+    winning_line = None
+    current_episode_q_changes = []
 
-    window = recent_results[-SKILL_WINDOW:]
 
-    player_win_rate = window.count("X") / len(window)
+def estimate_player_skill():
+    global player_skill
 
-    if len(window) >= 3 and player_win_rate >= 0.80:
-        return 5
+    if not session_results:
+        player_skill = 50
+        return
 
-    if len(window) >= 3 and player_win_rate >= 0.65:
-        return 4
+    score = 50
 
-    if len(window) >= 3 and player_win_rate >= 0.45:
-        return 3
+    # Adapt using the most recent 10 episodes.
+    for result in session_results[-10:]:
+        if result == "P":
+            score += 10
+        elif result == "D":
+            score += 3
+        elif result == "A":
+            score -= 8
 
-    if len(window) >= 3 and player_win_rate >= 0.25:
-        return 2
-
-    return 1
+    player_skill = max(0, min(100, score))
 
 
 def update_difficulty():
-    global difficulty
-    global difficulty_name
+    global difficulty_name, difficulty_level
 
-    difficulty = calculate_difficulty()
+    # First 3 completed episodes remain Very Easy.
+    if len(session_results) < 3:
+        difficulty_name = "Very Easy"
+        difficulty_level = 1
+        return
 
-    names = {
-        1: "Very Easy",
-        2: "Easy",
-        3: "Normal",
-        4: "Hard",
-        5: "Expert"
+    estimate_player_skill()
+
+    if player_skill >= 80:
+        difficulty_name = "Expert"
+        difficulty_level = 5
+    elif player_skill >= 65:
+        difficulty_name = "Hard"
+        difficulty_level = 4
+    elif player_skill >= 45:
+        difficulty_name = "Normal"
+        difficulty_level = 3
+    elif player_skill >= 25:
+        difficulty_name = "Easy"
+        difficulty_level = 2
+    else:
+        difficulty_name = "Very Easy"
+        difficulty_level = 1
+
+
+def player_win_rate():
+    if not session_results:
+        return 0.0
+    return 100.0 * player_wins / len(session_results)
+
+
+def effective_epsilon():
+    factors = {
+        1: 1.35,
+        2: 1.10,
+        3: 0.80,
+        4: 0.50,
+        5: 0.25
     }
-
-    difficulty_name = names[difficulty]
-
-
-# ============================================================
-# TIC-TAC-TOE TACTICAL HELPERS
-# ============================================================
-
-def find_winning_move(symbol):
-    """
-    Return a move that immediately wins for the symbol.
-    """
-
-    for move in available_moves():
-
-        board[move] = symbol
-
-        result = check_winner()
-
-        board[move] = " "
-
-        if result == symbol:
-            return move
-
-    return None
+    return max(EPSILON_MIN, min(1.0, epsilon * factors[difficulty_level]))
 
 
-def find_blocking_move():
-    """
-    Block the player's immediate winning move.
-    """
-
-    return find_winning_move("X")
-
-
-def strategic_move():
-    """
-    A small rule-based tactical layer used at higher difficulty.
-
-    This is not replacing Q-learning.
-    It is used to make the increasing difficulty visible
-    and meaningful in a small Tic-Tac-Toe environment.
-    """
-
-    moves = available_moves()
-
-    # 1. Win immediately if possible.
-    winning = find_winning_move("O")
-
-    if winning is not None:
-        return winning
-
-    # 2. Block the player.
-    blocking = find_blocking_move()
-
-    if blocking is not None:
-        return blocking
-
-    # 3. Prefer center.
-    if 4 in moves:
-        return 4
-
-    # 4. Prefer corners.
-    corners = [
-        m for m in [0, 2, 6, 8]
-        if m in moves
-    ]
-
-    if corners:
-        return random.choice(corners)
-
-    return random.choice(moves)
-
-
-# ============================================================
-# RL ACTION SELECTION
-# ============================================================
-
-def choose_rl_action(state):
-    """
-    Difficulty-dependent epsilon-greedy selection.
-
-    Very Easy:
-        Mostly random.
-
-    Easy:
-        Some learned Q-values.
-
-    Normal:
-        Mostly learned Q-values.
-
-    Hard:
-        Strong learned Q-values + tactical decisions.
-
-    Expert:
-        Very strong Q-values + tactical decisions.
-    """
-
-    moves = available_moves()
-
-    if not moves:
+def tactical_move(b):
+    actions = available_actions(b)
+    if not actions:
         return None
 
+    # 1. Immediate winning move.
+    for a in actions:
+        temp = b.copy()
+        temp[a] = AGENT
+        win, _ = check_winner(temp, AGENT)
+        if win:
+            return a
+
+    # 2. Block player's immediate winning move.
+    for a in actions:
+        temp = b.copy()
+        temp[a] = PLAYER
+        win, _ = check_winner(temp, PLAYER)
+        if win:
+            return a
+
+    # 3. Tactical scoring.
+    scores = {}
+    for a in actions:
+        score = 0.0
+        temp = b.copy()
+        temp[a] = AGENT
+
+        for line in WINNING_LINES:
+            if a not in line:
+                continue
+
+            values = [temp[i] for i in line]
+            agent_count = values.count(AGENT)
+            player_count = values.count(PLAYER)
+            empty_count = values.count(EMPTY)
+
+            if player_count == 0:
+                if agent_count == 2 and empty_count == 1:
+                    score += 10
+                elif agent_count == 1 and empty_count == 2:
+                    score += 3
+
+        if a in [5, 6, 9, 10]:
+            score += 2.5
+
+        if a in [1, 2, 4, 7, 8, 11, 13, 14]:
+            score += 1.0
+
+        scores[a] = score
+
+    max_score = max(scores.values())
+    best = [a for a, s in scores.items() if s == max_score]
+    return random.choice(best)
+
+
+def choose_agent_action():
+    state = board_to_state(board)
+    actions = available_actions(board)
+
+    if not actions:
+        return None
+
+    eps = effective_epsilon()
+
+    tactical_probability = {
+        1: 0.05,
+        2: 0.15,
+        3: 0.35,
+        4: 0.70,
+        5: 0.92
+    }[difficulty_level]
+
+    if random.random() < tactical_probability:
+        move = tactical_move(board)
+        if move is not None:
+            return move
+
+    # Epsilon-greedy policy.
+    if random.random() < eps:
+        return random.choice(actions)
+
     q_values = Q[state]
+    legal_q = [(a, q_values[a]) for a in actions]
+    max_q = max(v for _, v in legal_q)
+    best_actions = [a for a, v in legal_q if v == max_q]
+    return random.choice(best_actions)
 
-    # Effective exploration becomes smaller as difficulty rises.
-    if difficulty == 1:
-        effective_epsilon = max(0.65, epsilon)
 
-    elif difficulty == 2:
-        effective_epsilon = max(0.40, epsilon * 0.75)
+def q_update(state, action, reward, next_state, terminal):
+    global total_q_updates
 
-    elif difficulty == 3:
-        effective_epsilon = max(0.20, epsilon * 0.45)
+    q_before = float(Q[state][action])
 
-    elif difficulty == 4:
-        effective_epsilon = max(0.08, epsilon * 0.20)
-
+    if terminal:
+        target = reward
     else:
-        effective_epsilon = 0.02
+        legal_next = [i for i, ch in enumerate(next_state) if ch == EMPTY]
 
-    # At high difficulty, tactical behavior is used.
-    if difficulty >= 4:
+        if legal_next:
+            next_max = max(float(Q[next_state][a]) for a in legal_next)
+        else:
+            next_max = 0.0
 
-        # 70% tactical/learned behavior.
-        if random.random() < 0.70:
-            tactical = strategic_move()
+        target = reward + GAMMA * next_max
 
-            if tactical is not None:
-                return tactical
+    Q[state][action] += ALPHA * (target - Q[state][action])
+    q_after = float(Q[state][action])
+    delta = q_after - q_before
 
-    # Exploration.
-    if random.random() < effective_epsilon:
-        return random.choice(moves)
+    current_episode_q_changes.append(abs(delta))
+    total_q_updates += 1
 
-    # Learned Q-value selection.
-    best_value = max(
-        q_values[m]
-        for m in moves
+    recent_updates.appendleft(
+        f"a={action + 1:02d} r={reward:+.1f} "
+        f"Q:{q_before:+.2f}->{q_after:+.2f} dQ={delta:+.2f}"
     )
 
-    best_moves = [
-        m for m in moves
-        if q_values[m] == best_value
-    ]
-
-    return random.choice(best_moves)
+    return q_before, q_after
 
 
-# ============================================================
-# Q-LEARNING UPDATE
-# ============================================================
+def make_agent_move():
+    global last_agent_state, last_agent_action, last_action_info
 
-def update_q(previous_state, action, reward, next_state):
+    if game_over or session_finished:
+        return
 
-    global q_before
-    global q_after
+    action = choose_agent_action()
+    if action is None:
+        return
 
-    old_value = Q[previous_state][action]
+    state = board_to_state(board)
+    q_before = float(Q[state][action])
 
-    next_moves = available_moves()
+    board[action] = AGENT
 
-    if next_moves:
-        best_next = max(
-            Q[next_state][m]
-            for m in next_moves
+    last_agent_state = state
+    last_agent_action = action
+
+    agent_win, _ = check_winner(board, AGENT)
+
+    if agent_win:
+        q_before, q_after = q_update(
+            state, action, 10.0, board_to_state(board), True
         )
-    else:
-        best_next = 0.0
+        last_action_info = {
+            "state": state,
+            "action": action + 1,
+            "reward": 10,
+            "q_before": q_before,
+            "q_after": q_after,
+            "delta": q_after - q_before
+        }
+        finish_game("A")
+        return
 
-    new_value = old_value + ALPHA * (
-        reward +
-        GAMMA * best_next -
-        old_value
-    )
-
-    Q[previous_state][action] = new_value
-
-    q_before = old_value
-    q_after = new_value
-
-    update_history.insert(
-        0,
-        (
-            previous_state,
-            action + 1,
-            reward,
-            old_value,
-            new_value
+    if is_draw(board):
+        q_before, q_after = q_update(
+            state, action, 3.0, board_to_state(board), True
         )
-    )
+        last_action_info = {
+            "state": state,
+            "action": action + 1,
+            "reward": 3,
+            "q_before": q_before,
+            "q_after": q_after,
+            "delta": q_after - q_before
+        }
+        finish_game("D")
+        return
 
-    del update_history[8:]
-
-
-# ============================================================
-# REWARD
-# ============================================================
-
-def reward_for_result(result):
-
-    if result == "O":
-        return 10
-
-    if result == "Draw":
-        return 3
-
-    if result == "X":
-        return -10
-
-    return 0
+    last_action_info = {
+        "state": state,
+        "action": action + 1,
+        "reward": 0,
+        "q_before": q_before,
+        "q_after": q_before,
+        "delta": 0.0
+    }
 
 
-# ============================================================
-# RESET GAME
-# ============================================================
+def player_move(index):
+    global last_action_info
 
-def reset_game():
+    if game_over or session_finished:
+        return
 
-    global board
-    global current_turn
-    global game_over
-    global winner
-    global previous_state
-    global previous_action
-    global last_state
-    global last_action
-    global last_reward
-    global q_before
-    global q_after
-    global message
-    global game_end_timer
+    if index < 0 or index >= 16 or board[index] != EMPTY:
+        return
 
-    board = [" "] * 9
+    board[index] = PLAYER
 
-    current_turn = "X"
+    player_win, _ = check_winner(board, PLAYER)
 
-    game_over = False
-    winner = None
+    if player_win:
+        if last_agent_state is not None and last_agent_action is not None:
+            q_before, q_after = q_update(
+                last_agent_state,
+                last_agent_action,
+                -10.0,
+                board_to_state(board),
+                True
+            )
 
-    previous_state = None
-    previous_action = None
+            last_action_info = {
+                "state": last_agent_state,
+                "action": last_agent_action + 1,
+                "reward": -10,
+                "q_before": q_before,
+                "q_after": q_after,
+                "delta": q_after - q_before
+            }
 
-    last_state = "---------"
-    last_action = "-"
-    last_reward = 0
+        finish_game("P")
+        return
 
-    q_before = 0.0
-    q_after = 0.0
+    if is_draw(board):
+        if last_agent_state is not None and last_agent_action is not None:
+            q_before, q_after = q_update(
+                last_agent_state,
+                last_agent_action,
+                3.0,
+                board_to_state(board),
+                True
+            )
 
-    game_end_timer = 0
+            last_action_info = {
+                "state": last_agent_state,
+                "action": last_agent_action + 1,
+                "reward": 3,
+                "q_before": q_before,
+                "q_after": q_after,
+                "delta": q_after - q_before
+            }
 
-    message = (
-        f"Episode {episode}: "
-        f"You are X. Make your move."
-    )
+        finish_game("D")
+        return
 
+    # Normal non-terminal Q update after player's response.
+    if last_agent_state is not None and last_agent_action is not None:
+        q_before, q_after = q_update(
+            last_agent_state,
+            last_agent_action,
+            0.0,
+            board_to_state(board),
+            False
+        )
 
-# ============================================================
-# FINISH GAME
-# ============================================================
+        last_action_info = {
+            "state": last_agent_state,
+            "action": last_agent_action + 1,
+            "reward": 0,
+            "q_before": q_before,
+            "q_after": q_after,
+            "delta": q_after - q_before
+        }
+
+    make_agent_move()
+
 
 def finish_game(result):
-
-    global game_over
-    global winner
-    global player_wins
-    global agent_wins
-    global draws
-    global last_reward
-    global episode
-    global epsilon
-    global game_end_timer
-    global message
-    global previous_state
-    global previous_action
+    global game_over, player_wins, agent_wins, draws, winning_line
+    global epsilon, session_finished, next_game_time
+    global previous_episode_skill
 
     game_over = True
-    winner = result
+    session_results.append(result)
 
-    reward = reward_for_result(result)
-
-    last_reward = reward
-
-    # Final Q update.
-    if (
-        previous_state is not None
-        and previous_action is not None
-    ):
-
-        next_state = board_to_state()
-
-        update_q(
-            previous_state,
-            previous_action,
-            reward,
-            next_state
-        )
-
-    # Record result.
-    recent_results.append(result)
-
-    if result == "X":
-
+    if result == "P":
+        _, winning_line = check_winner(board, PLAYER)
         player_wins += 1
-        message = "YOU WIN! Difficulty will adapt."
-
-    elif result == "O":
-
+    elif result == "A":
+        _, winning_line = check_winner(board, AGENT)
         agent_wins += 1
-        message = "RL AGENT WINS! Learning updated."
-
     else:
-
+        winning_line = None
         draws += 1
-        message = "DRAW! Learning updated."
 
-    # Update adaptive difficulty.
+    old_skill = player_skill
+
+    epsilon = max(EPSILON_MIN, epsilon * EPSILON_DECAY)
+    estimate_player_skill()
     update_difficulty()
 
-    # Reduce exploration after every episode.
-    epsilon = max(
-        EPSILON_MIN,
-        epsilon * EPSILON_DECAY
+    avg_q_change = (
+        float(np.mean(current_episode_q_changes))
+        if current_episode_q_changes else 0.0
+    )
+    max_q_change = (
+        float(np.max(current_episode_q_changes))
+        if current_episode_q_changes else 0.0
     )
 
-    episode += 1
+    episode_history.append({
+        "episode": len(session_results),
+        "result": result,
+        "skill": player_skill,
+        "skill_change": player_skill - old_skill,
+        "difficulty": difficulty_level,
+        "difficulty_name": difficulty_name,
+        "epsilon": effective_epsilon(),
+        "avg_q_change": avg_q_change,
+        "max_q_change": max_q_change,
+        "q_updates": len(current_episode_q_changes),
+        "learned_states": len(Q),
+        "player_win_rate": player_win_rate()
+    })
 
-    game_end_timer = pygame.time.get_ticks()
+    previous_episode_skill = player_skill
 
-
-# ============================================================
-# RL MOVE
-# ============================================================
-
-def make_rl_move():
-
-    global current_turn
-    global previous_state
-    global previous_action
-    global last_state
-    global last_action
-    global message
-
-    state = board_to_state()
-
-    action = choose_rl_action(state)
-
-    previous_state = state
-    previous_action = action
-
-    last_state = state
-    last_action = str(action + 1)
-
-    board[action] = "O"
-
-    result = check_winner()
-
-    if result is not None:
-
-        finish_game(result)
-
+    if len(session_results) >= TOTAL_EPISODES:
+        session_finished = True
     else:
+        next_game_time = pygame.time.get_ticks() + 1200
 
-        current_turn = "X"
 
-        message = (
-            f"Difficulty: {difficulty_name} | "
-            "Your turn."
+def start_new_session():
+    global session_results, player_wins, agent_wins, draws
+    global epsilon, session_finished, player_skill
+    global difficulty_name, difficulty_level
+    global last_action_info, episode_history
+    global total_q_updates, previous_episode_skill
+
+    session_results = []
+    player_wins = 0
+    agent_wins = 0
+    draws = 0
+
+    epsilon = EPSILON_START
+    player_skill = 50
+    previous_episode_skill = 50
+
+    difficulty_name = "Very Easy"
+    difficulty_level = 1
+    session_finished = False
+
+    episode_history = []
+    total_q_updates = 0
+    recent_updates.clear()
+
+    last_action_info = {
+        "state": "",
+        "action": "-",
+        "reward": 0,
+        "q_before": 0.0,
+        "q_after": 0.0,
+        "delta": 0.0
+    }
+
+    # Q-table is intentionally preserved so the agent keeps learning
+    # between 25-episode sessions.
+    reset_board()
+
+
+# ---------------------- Drawing Helpers ----------------------
+
+def draw_text(text, x, y, font=FONT, color=TEXT):
+    surf = font.render(str(text), True, color)
+    screen.blit(surf, (x, y))
+
+
+def draw_centered_text(text, center_x, y, font=FONT, color=TEXT):
+    surf = font.render(str(text), True, color)
+    screen.blit(surf, (center_x - surf.get_width() // 2, y))
+
+
+def draw_card(rect, title=None):
+    pygame.draw.rect(screen, CARD_BG, rect, border_radius=12)
+    pygame.draw.rect(screen, BORDER, rect, 1, border_radius=12)
+
+    if title:
+        draw_text(title, rect.x + 14, rect.y + 10, FONT_MED)
+        pygame.draw.line(
+            screen,
+            BORDER,
+            (rect.x + 12, rect.y + 44),
+            (rect.right - 12, rect.y + 44),
+            1
         )
 
 
-# ============================================================
-# PLAYER MOVE
-# ============================================================
+def draw_metric_card(rect, title, value, value_color=TEXT):
+    pygame.draw.rect(screen, CARD_BG, rect, border_radius=11)
+    pygame.draw.rect(screen, BORDER, rect, 1, border_radius=11)
+    draw_text(title, rect.x + 12, rect.y + 9, FONT_TINY, MUTED)
+    draw_text(value, rect.x + 12, rect.y + 29, FONT_MED, value_color)
 
-def player_move(position):
-
-    global current_turn
-    global last_state
-    global message
-
-    if game_over:
-        return
-
-    if current_turn != "X":
-        return
-
-    if board[position] != " ":
-        return
-
-    last_state = board_to_state()
-
-    board[position] = "X"
-
-    result = check_winner()
-
-    if result is not None:
-
-        finish_game(result)
-
-        return
-
-    current_turn = "O"
-
-    message = "RL agent is thinking..."
-
-    # Short delay would be more realistic, but immediate action
-    # keeps the game responsive.
-    make_rl_move()
-
-
-# ============================================================
-# DRAW BOARD
-# ============================================================
 
 def draw_board():
-
     pygame.draw.rect(
         screen,
-        WHITE,
-        (
-            BOARD_X,
-            BOARD_Y,
-            BOARD_SIZE,
-            BOARD_SIZE
-        )
+        (30, 33, 40),
+        (BOARD_X, BOARD_Y, BOARD_SIZE, BOARD_SIZE),
+        border_radius=8
     )
 
-    for i in range(1, 3):
+    for i in range(1, GRID_SIZE):
+        x = BOARD_X + i * CELL_SIZE
+        y = BOARD_Y + i * CELL_SIZE
 
         pygame.draw.line(
             screen,
-            BLACK,
-            (
-                BOARD_X + i * CELL_SIZE,
-                BOARD_Y
-            ),
-            (
-                BOARD_X + i * CELL_SIZE,
-                BOARD_Y + BOARD_SIZE
-            ),
-            5
+            GRID_COLOR,
+            (x, BOARD_Y),
+            (x, BOARD_Y + BOARD_SIZE),
+            4
         )
-
         pygame.draw.line(
             screen,
-            BLACK,
-            (
-                BOARD_X,
-                BOARD_Y + i * CELL_SIZE
-            ),
-            (
-                BOARD_X + BOARD_SIZE,
-                BOARD_Y + i * CELL_SIZE
-            ),
-            5
+            GRID_COLOR,
+            (BOARD_X, y),
+            (BOARD_X + BOARD_SIZE, y),
+            4
         )
 
     for i, value in enumerate(board):
+        r = i // GRID_SIZE
+        c = i % GRID_SIZE
 
-        row = i // 3
-        col = i % 3
+        cx = BOARD_X + c * CELL_SIZE + CELL_SIZE // 2
+        cy = BOARD_Y + r * CELL_SIZE + CELL_SIZE // 2
 
-        cx = (
-            BOARD_X +
-            col * CELL_SIZE +
-            CELL_SIZE // 2
-        )
-
-        cy = (
-            BOARD_Y +
-            row * CELL_SIZE +
-            CELL_SIZE // 2
-        )
-
-        if value == "X":
-
-            offset = 55
-
+        if value == PLAYER:
+            pad = 42
             pygame.draw.line(
-                screen,
-                BLUE,
-                (
-                    cx - offset,
-                    cy - offset
-                ),
-                (
-                    cx + offset,
-                    cy + offset
-                ),
+                screen, X_COLOR,
+                (cx - pad, cy - pad),
+                (cx + pad, cy + pad),
                 10
             )
-
             pygame.draw.line(
-                screen,
-                BLUE,
-                (
-                    cx + offset,
-                    cy - offset
-                ),
-                (
-                    cx - offset,
-                    cy + offset
-                ),
+                screen, X_COLOR,
+                (cx + pad, cy - pad),
+                (cx - pad, cy + pad),
                 10
             )
 
-        elif value == "O":
+        elif value == AGENT:
+            pygame.draw.circle(screen, O_COLOR, (cx, cy), 47, 10)
 
-            pygame.draw.circle(
-                screen,
-                RED,
-                (
-                    cx,
-                    cy
-                ),
-                58,
-                10
-            )
+        draw_text(
+            str(i + 1),
+            BOARD_X + c * CELL_SIZE + 9,
+            BOARD_Y + r * CELL_SIZE + 7,
+            FONT_TINY,
+            MUTED
+        )
+
+    if winning_line:
+        points = []
+        for index in winning_line:
+            row = index // GRID_SIZE
+            col = index % GRID_SIZE
+            points.append((
+                BOARD_X + col * CELL_SIZE + CELL_SIZE // 2,
+                BOARD_Y + row * CELL_SIZE + CELL_SIZE // 2
+            ))
+
+        line_color = GREEN if board[winning_line[0]] == PLAYER else O_COLOR
+        pygame.draw.line(screen, line_color, points[0], points[-1], 8)
 
 
-# ============================================================
-# DRAW PANEL
-# ============================================================
+def draw_difficulty_section(rect):
+    draw_card(rect, "Adaptive Difficulty")
 
-def draw_panel():
+    draw_text(
+        f"{difficulty_name}  ({difficulty_level}/5)",
+        rect.x + 16,
+        rect.y + 58,
+        FONT_MED
+    )
+
+    bar_x = rect.x + 16
+    bar_y = rect.y + 94
+    bar_w = rect.w - 32
 
     pygame.draw.rect(
-        screen,
-        LIGHT_GRAY,
-        (
-            PANEL_X,
-            20,
-            PANEL_WIDTH,
-            HEIGHT - 40
-        ),
-        border_radius=12
+        screen, BAR_BG,
+        (bar_x, bar_y, bar_w, 20),
+        border_radius=10
     )
 
-    title = medium_font.render(
-        "RL Learning & Adaptive Difficulty",
-        True,
-        BLACK
-    )
+    fill_w = int(bar_w * difficulty_level / 5)
 
-    screen.blit(
-        title,
-        (
-            PANEL_X + 20,
-            35
-        )
-    )
-
-    y = 75
-
-    # --------------------------------------------------------
-    # Difficulty
-    # --------------------------------------------------------
-
-    difficulty_text = medium_font.render(
-        f"DIFFICULTY: {difficulty}/5 - {difficulty_name}",
-        True,
-        RED if difficulty >= 4 else GREEN
-    )
-
-    screen.blit(
-        difficulty_text,
-        (
-            PANEL_X + 20,
-            y
-        )
-    )
-
-    y += 35
-
-    # Difficulty progress bar.
-    bar_x = PANEL_X + 20
-    bar_y = y
-    bar_width = 400
-    bar_height = 18
-
-    pygame.draw.rect(
-        screen,
-        WHITE,
-        (
-            bar_x,
-            bar_y,
-            bar_width,
-            bar_height
-        )
-    )
-
-    pygame.draw.rect(
-        screen,
-        RED,
-        (
-            bar_x,
-            bar_y,
-            int(
-                bar_width *
-                difficulty /
-                5
-            ),
-            bar_height
-        )
-    )
-
-    y += 32
-
-    # --------------------------------------------------------
-    # Statistics
-    # --------------------------------------------------------
-
-    stats = [
-        f"Episode: {episode}",
-        f"Player wins: {player_wins}",
-        f"RL wins: {agent_wins}",
-        f"Draws: {draws}",
-        f"Exploration (epsilon): {epsilon:.3f}",
-        f"Learned states: {len(Q)}",
-    ]
-
-    for text in stats:
-
-        rendered = font.render(
-            text,
-            True,
-            BLACK
-        )
-
-        screen.blit(
-            rendered,
-            (
-                PANEL_X + 20,
-                y
-            )
-        )
-
-        y += 25
-
-    # --------------------------------------------------------
-    # Recent skill estimate
-    # --------------------------------------------------------
-
-    y += 5
-
-    if recent_results:
-
-        window = recent_results[-SKILL_WINDOW:]
-
-        player_rate = (
-            window.count("X") /
-            len(window)
-        )
-
+    if difficulty_level <= 2:
+        bar_color = GREEN
+    elif difficulty_level == 3:
+        bar_color = YELLOW
     else:
+        bar_color = RED
 
-        player_rate = 0
-
-    skill_text = (
-        f"Recent player win rate: "
-        f"{player_rate * 100:.0f}%"
+    pygame.draw.rect(
+        screen, bar_color,
+        (bar_x, bar_y, fill_w, 20),
+        border_radius=10
     )
 
-    rendered = font.render(
-        skill_text,
-        True,
-        PURPLE
+    draw_text(
+        f"Skill: {player_skill}/100",
+        rect.x + 16,
+        rect.y + 125,
+        FONT_SMALL,
+        TEXT
+    )
+    draw_text(
+        f"Effective epsilon: {effective_epsilon():.3f}",
+        rect.x + 205,
+        rect.y + 125,
+        FONT_SMALL,
+        TEXT
     )
 
-    screen.blit(
-        rendered,
-        (
-            PANEL_X + 20,
-            y
-        )
-    )
 
-    y += 30
+def draw_q_moveset(rect):
+    draw_card(rect, "Best Current Q-values")
 
-    # --------------------------------------------------------
-    # Current state
-    # --------------------------------------------------------
-
-    pygame.draw.line(
-        screen,
-        GRAY,
-        (
-            PANEL_X + 20,
-            y
-        ),
-        (
-            PANEL_X + PANEL_WIDTH - 20,
-            y
-        ),
-        2
-    )
-
-    y += 10
-
-    rendered = font.render(
-        "Current RL State:",
-        True,
-        BLACK
-    )
-
-    screen.blit(
-        rendered,
-        (
-            PANEL_X + 20,
-            y
-        )
-    )
-
-    y += 25
-
-    rendered = medium_font.render(
-        board_to_state(),
-        True,
-        PURPLE
-    )
-
-    screen.blit(
-        rendered,
-        (
-            PANEL_X + 20,
-            y
-        )
-    )
-
-    y += 35
-
-    # --------------------------------------------------------
-    # Last RL decision
-    # --------------------------------------------------------
-
-    decision = [
-        f"RL selected position: {last_action}",
-        f"Reward: {last_reward:+}",
-        f"Q before: {q_before:+.3f}",
-        f"Q after:  {q_after:+.3f}",
-    ]
-
-    for text in decision:
-
-        rendered = small_font.render(
-            text,
-            True,
-            BLACK
-        )
-
-        screen.blit(
-            rendered,
-            (
-                PANEL_X + 20,
-                y
-            )
-        )
-
-        y += 21
-
-    # --------------------------------------------------------
-    # Q-value moveset
-    # --------------------------------------------------------
-
-    y += 3
-
-    rendered = font.render(
-        "LIVE Q-VALUE MOVESET",
-        True,
-        BLACK
-    )
-
-    screen.blit(
-        rendered,
-        (
-            PANEL_X + 20,
-            y
-        )
-    )
-
-    y += 25
-
-    state = board_to_state()
-
+    state = board_to_state(board)
     q_values = Q[state]
+    actions = available_actions(board)
 
-    # 3x3 Q-value representation.
-    for row in range(3):
+    if not actions:
+        draw_text("No legal moves.", rect.x + 14, rect.y + 58, FONT_SMALL, MUTED)
+        return
 
-        line = ""
+    items = [(a, float(q_values[a])) for a in actions]
+    items.sort(key=lambda x: x[1], reverse=True)
 
-        for col in range(3):
-
-            pos = row * 3 + col
-
-            if board[pos] != " ":
-
-                line += (
-                    f" {board[pos]:^6} "
-                )
-
-            else:
-
-                line += (
-                    f" {pos + 1}:{q_values[pos]:+5.2f} "
-                )
-
-        rendered = small_font.render(
-            line,
-            True,
-            BLACK
+    y = rect.y + 58
+    for a, qv in items[:6]:
+        r = a // 4 + 1
+        c = a % 4 + 1
+        draw_text(
+            f"Cell {a+1:02d}  r{r}c{c}   Q={qv:+.3f}",
+            rect.x + 14,
+            y,
+            FONT_SMALL,
+            TEXT
         )
-
-        screen.blit(
-            rendered,
-            (
-                PANEL_X + 20,
-                y
-            )
-        )
-
         y += 22
 
-    # --------------------------------------------------------
-    # Q update history
-    # --------------------------------------------------------
 
-    y += 5
+def draw_recent_updates(rect):
+    draw_card(rect, "Recent Q Updates")
 
-    rendered = font.render(
-        "Recent Q-table Updates",
-        True,
-        BLACK
+    y = rect.y + 58
+    if not recent_updates:
+        draw_text("No Q updates yet.", rect.x + 14, y, FONT_SMALL, MUTED)
+        return
+
+    for item in list(recent_updates)[:5]:
+        draw_text(item, rect.x + 14, y, FONT_TINY, MUTED)
+        y += 20
+
+
+def draw_panel():
+    pygame.draw.rect(
+        screen,
+        PANEL_BG,
+        (PANEL_X, PANEL_Y, PANEL_W, PANEL_H),
+        border_radius=14
     )
 
-    screen.blit(
-        rendered,
-        (
-            PANEL_X + 20,
-            y
-        )
+    current_episode = min(len(session_results) + 1, TOTAL_EPISODES)
+    if session_finished:
+        current_episode = TOTAL_EPISODES
+
+    draw_text(
+        f"Episode {current_episode} / {TOTAL_EPISODES}",
+        PANEL_X + 20,
+        PANEL_Y + 15,
+        FONT_BIG
     )
 
-    y += 24
+    # Compact metric cards.
+    card_y = PANEL_Y + 62
+    gap = 10
+    card_w = 138
+    card_h = 58
 
-    for state, action, reward, before, after in update_history:
+    draw_metric_card(
+        pygame.Rect(PANEL_X + 20, card_y, card_w, card_h),
+        "PLAYER WINS",
+        str(player_wins),
+        X_COLOR
+    )
+    draw_metric_card(
+        pygame.Rect(PANEL_X + 20 + card_w + gap, card_y, card_w, card_h),
+        "RL WINS",
+        str(agent_wins),
+        O_COLOR
+    )
+    draw_metric_card(
+        pygame.Rect(PANEL_X + 20 + 2 * (card_w + gap), card_y, card_w, card_h),
+        "DRAWS",
+        str(draws),
+        YELLOW
+    )
+    draw_metric_card(
+        pygame.Rect(PANEL_X + 20 + 3 * (card_w + gap), card_y, 132, card_h),
+        "LEARNED STATES",
+        str(len(Q)),
+        CYAN
+    )
 
-        text = (
-            f"A{action} | R{reward:+} | "
-            f"{before:+.2f} -> {after:+.2f}"
+    diff_rect = pygame.Rect(PANEL_X + 20, PANEL_Y + 132, PANEL_W - 40, 165)
+    draw_difficulty_section(diff_rect)
+
+    # Last action section.
+    action_rect = pygame.Rect(PANEL_X + 20, PANEL_Y + 307, PANEL_W - 40, 105)
+    draw_card(action_rect, "Last RL Action")
+
+    draw_text(
+        f"Cell: {last_action_info['action']}    "
+        f"Reward: {last_action_info['reward']:+}",
+        action_rect.x + 14,
+        action_rect.y + 55,
+        FONT_SMALL
+    )
+    draw_text(
+        f"Q: {last_action_info['q_before']:+.3f} -> "
+        f"{last_action_info['q_after']:+.3f}    "
+        f"dQ={last_action_info['delta']:+.3f}",
+        action_rect.x + 14,
+        action_rect.y + 78,
+        FONT_SMALL,
+        MUTED
+    )
+
+    q_rect = pygame.Rect(PANEL_X + 20, PANEL_Y + 422, 280, 205)
+    updates_rect = pygame.Rect(PANEL_X + 310, PANEL_Y + 422, 290, 205)
+
+    draw_q_moveset(q_rect)
+    draw_recent_updates(updates_rect)
+
+    footer_rect = pygame.Rect(PANEL_X + 20, PANEL_Y + 637, PANEL_W - 40, 122)
+    draw_card(footer_rect, "Session Progress")
+
+    draw_text(
+        f"Player win rate: {player_win_rate():.1f}%",
+        footer_rect.x + 14,
+        footer_rect.y + 57,
+        FONT_SMALL
+    )
+    draw_text(
+        f"Total Q updates: {total_q_updates}",
+        footer_rect.x + 220,
+        footer_rect.y + 57,
+        FONT_SMALL
+    )
+
+    results = "".join(session_results[-18:]) or "-"
+    draw_text(
+        f"Recent outcomes: {results}",
+        footer_rect.x + 14,
+        footer_rect.y + 83,
+        FONT_SMALL,
+        MUTED
+    )
+
+
+def draw_top_text():
+    draw_text("Adaptive 4x4 Tic-Tac-Toe", BOARD_X, 30, FONT_TITLE)
+    draw_text(
+        "Three consecutive marks win. You are X; the RL agent is O.",
+        BOARD_X,
+        78,
+        FONT
+    )
+
+    draw_text(
+        "Click an empty cell to play.",
+        BOARD_X,
+        785,
+        FONT_MED
+    )
+    draw_text(
+        "The agent automatically adapts its difficulty to your recent performance.",
+        BOARD_X,
+        820,
+        FONT_SMALL,
+        MUTED
+    )
+    draw_text(
+        "ESC = Quit",
+        BOARD_X,
+        847,
+        FONT_SMALL,
+        MUTED
+    )
+
+
+def draw_episode_result_overlay():
+    overlay = pygame.Surface((WIDTH, HEIGHT), pygame.SRCALPHA)
+    overlay.fill((*OVERLAY, 110))
+    screen.blit(overlay, (0, 0))
+
+    card = pygame.Rect(355, 285, 690, 275)
+    pygame.draw.rect(screen, PANEL_BG, card, border_radius=20)
+
+    result = session_results[-1]
+
+    if result == "P":
+        title = "YOU WIN!"
+        subtitle = "Your success increases the estimated expertise."
+        color = GREEN
+    elif result == "A":
+        title = "RL AGENT WINS"
+        subtitle = "The model learns from the transition and adapts."
+        color = O_COLOR
+    else:
+        title = "DRAW"
+        subtitle = "A balanced episode also contributes to skill estimation."
+        color = YELLOW
+
+    pygame.draw.rect(screen, color, card, 3, border_radius=20)
+
+    draw_centered_text(title, WIDTH // 2, 320, FONT_TITLE, color)
+    draw_centered_text(subtitle, WIDTH // 2, 378, FONT)
+    draw_centered_text(
+        f"Episode {len(session_results)} of {TOTAL_EPISODES} complete",
+        WIDTH // 2,
+        425,
+        FONT_MED,
+        MUTED
+    )
+
+    if episode_history:
+        h = episode_history[-1]
+        change = h["skill_change"]
+        sign = "+" if change >= 0 else ""
+        draw_centered_text(
+            f"Expertise: {h['skill']}/100 ({sign}{change})  |  "
+            f"Difficulty: {h['difficulty_name']}  |  "
+            f"Avg |dQ|: {h['avg_q_change']:.3f}",
+            WIDTH // 2,
+            470,
+            FONT_SMALL,
+            TEXT
         )
 
-        rendered = small_font.render(
-            text,
-            True,
-            BLACK
+    draw_centered_text(
+        "Next episode starting...",
+        WIDTH // 2,
+        515,
+        FONT_SMALL,
+        MUTED
+    )
+
+
+# ---------------------- Summary Charts ----------------------
+
+def draw_line_chart(rect, title, values, min_value=None, max_value=None,
+                    line_color=BLUE, value_suffix=""):
+    draw_card(rect, title)
+
+    if not values:
+        draw_text("No data.", rect.x + 16, rect.y + 62, FONT_SMALL, MUTED)
+        return
+
+    plot_left = rect.x + 48
+    plot_right = rect.right - 18
+    plot_top = rect.y + 58
+    plot_bottom = rect.bottom - 34
+
+    if min_value is None:
+        min_value = min(values)
+    if max_value is None:
+        max_value = max(values)
+
+    if max_value == min_value:
+        max_value += 1
+
+    # Axes/grid.
+    for i in range(5):
+        y = int(plot_top + i * (plot_bottom - plot_top) / 4)
+        pygame.draw.line(
+            screen,
+            BORDER,
+            (plot_left, y),
+            (plot_right, y),
+            1
         )
 
-        screen.blit(
-            rendered,
-            (
-                PANEL_X + 20,
-                y
-            )
+    pygame.draw.line(
+        screen, MUTED,
+        (plot_left, plot_top),
+        (plot_left, plot_bottom),
+        1
+    )
+    pygame.draw.line(
+        screen, MUTED,
+        (plot_left, plot_bottom),
+        (plot_right, plot_bottom),
+        1
+    )
+
+    def map_y(v):
+        ratio = (v - min_value) / (max_value - min_value)
+        return int(plot_bottom - ratio * (plot_bottom - plot_top))
+
+    points = []
+    n = len(values)
+
+    for i, v in enumerate(values):
+        if n == 1:
+            x = (plot_left + plot_right) // 2
+        else:
+            x = int(plot_left + i * (plot_right - plot_left) / (n - 1))
+        y = map_y(v)
+        points.append((x, y))
+
+    if len(points) > 1:
+        pygame.draw.lines(screen, line_color, False, points, 3)
+
+    for x, y in points:
+        pygame.draw.circle(screen, line_color, (x, y), 3)
+
+    # Axis labels.
+    draw_text(
+        f"{max_value:.1f}{value_suffix}",
+        rect.x + 8,
+        plot_top - 5,
+        FONT_TINY,
+        MUTED
+    )
+    draw_text(
+        f"{min_value:.1f}{value_suffix}",
+        rect.x + 8,
+        plot_bottom - 8,
+        FONT_TINY,
+        MUTED
+    )
+    draw_text("1", plot_left - 3, plot_bottom + 8, FONT_TINY, MUTED)
+    draw_text(
+        str(len(values)),
+        plot_right - 12,
+        plot_bottom + 8,
+        FONT_TINY,
+        MUTED
+    )
+
+
+def draw_outcome_strip(rect):
+    draw_card(rect, "Episode Outcomes")
+
+    if not session_results:
+        return
+
+    x0 = rect.x + 18
+    y0 = rect.y + 60
+    usable_w = rect.w - 36
+    cell_gap = 3
+    cell_w = max(12, int((usable_w - cell_gap * 24) / 25))
+
+    for i, result in enumerate(session_results):
+        x = x0 + i * (cell_w + cell_gap)
+
+        if result == "P":
+            color = X_COLOR
+        elif result == "A":
+            color = O_COLOR
+        else:
+            color = YELLOW
+
+        pygame.draw.rect(
+            screen,
+            color,
+            (x, y0, cell_w, 36),
+            border_radius=5
+        )
+        draw_centered_text(
+            str(i + 1),
+            x + cell_w // 2,
+            y0 + 43,
+            FONT_TINY,
+            MUTED
         )
 
+    draw_text(
+        "Blue=P win   Pink=Agent win   Yellow=Draw",
+        rect.x + 18,
+        rect.bottom - 23,
+        FONT_TINY,
+        MUTED
+    )
+
+
+def draw_summary_overlay():
+    # Full-screen dashboard.
+    screen.fill(BG)
+
+    draw_text("25-Episode Learning Summary", 45, 22, FONT_TITLE)
+    draw_text(
+        "Adaptive difficulty, expertise progression and Q-learning behavior",
+        47,
+        67,
+        FONT,
+        MUTED
+    )
+
+    total = max(1, len(session_results))
+    p_rate = 100 * player_wins / total
+    a_rate = 100 * agent_wins / total
+    d_rate = 100 * draws / total
+
+    # Top metric cards.
+    mx = 45
+    my = 105
+    mw = 205
+    mh = 72
+    mg = 12
+
+    draw_metric_card(
+        pygame.Rect(mx, my, mw, mh),
+        "PLAYER RECORD",
+        f"{player_wins} wins ({p_rate:.1f}%)",
+        X_COLOR
+    )
+    draw_metric_card(
+        pygame.Rect(mx + (mw + mg), my, mw, mh),
+        "RL AGENT RECORD",
+        f"{agent_wins} wins ({a_rate:.1f}%)",
+        O_COLOR
+    )
+    draw_metric_card(
+        pygame.Rect(mx + 2 * (mw + mg), my, mw, mh),
+        "DRAWS",
+        f"{draws} ({d_rate:.1f}%)",
+        YELLOW
+    )
+    draw_metric_card(
+        pygame.Rect(mx + 3 * (mw + mg), my, mw, mh),
+        "FINAL EXPERTISE",
+        f"{player_skill}/100",
+        GREEN
+    )
+    draw_metric_card(
+        pygame.Rect(mx + 4 * (mw + mg), my, mw, mh),
+        "FINAL DIFFICULTY",
+        f"{difficulty_name} ({difficulty_level}/5)",
+        PURPLE
+    )
+    draw_metric_card(
+        pygame.Rect(mx + 5 * (mw + mg), my, 205, mh),
+        "Q-TABLE",
+        f"{len(Q)} states",
+        CYAN
+    )
+
+    # Prepare histories.
+    skills = [h["skill"] for h in episode_history]
+    q_changes = [h["avg_q_change"] for h in episode_history]
+    difficulties = [h["difficulty"] for h in episode_history]
+    epsilons = [h["epsilon"] for h in episode_history]
+
+    # Charts.
+    chart_w = 425
+    chart_h = 245
+    gap = 18
+    chart_y = 198
+
+    draw_line_chart(
+        pygame.Rect(45, chart_y, chart_w, chart_h),
+        "Player Expertise by Episode",
+        skills,
+        min_value=0,
+        max_value=100,
+        line_color=GREEN,
+        value_suffix=""
+    )
+
+    q_max = max(q_changes) if q_changes else 1.0
+    q_axis_max = max(1.0, q_max * 1.15)
+
+    draw_line_chart(
+        pygame.Rect(45 + chart_w + gap, chart_y, chart_w, chart_h),
+        "Average |Q-value Update|",
+        q_changes,
+        min_value=0,
+        max_value=q_axis_max,
+        line_color=CYAN
+    )
+
+    draw_line_chart(
+        pygame.Rect(45 + 2 * (chart_w + gap), chart_y, chart_w, chart_h),
+        "Difficulty Level by Episode",
+        difficulties,
+        min_value=1,
+        max_value=5,
+        line_color=PURPLE
+    )
+
+    # Second row: epsilon + detailed episode table + outcomes.
+    second_y = 462
+
+    draw_line_chart(
+        pygame.Rect(45, second_y, chart_w, 215),
+        "Exploration Rate (Epsilon)",
+        epsilons,
+        min_value=0,
+        max_value=1,
+        line_color=YELLOW
+    )
+
+    table_rect = pygame.Rect(45 + chart_w + gap, second_y, 868, 215)
+    draw_card(table_rect, "Episode Learning Details")
+
+    headers = ["Ep", "Result", "Skill", "dSkill", "Diff", "Avg|dQ|", "Q upd", "States"]
+    x_positions = [
+        table_rect.x + 14,
+        table_rect.x + 60,
+        table_rect.x + 125,
+        table_rect.x + 200,
+        table_rect.x + 275,
+        table_rect.x + 350,
+        table_rect.x + 465,
+        table_rect.x + 545
+    ]
+
+    for htxt, x in zip(headers, x_positions):
+        draw_text(htxt, x, table_rect.y + 52, FONT_TINY, MUTED)
+
+    # Show last 7 episodes, which fits without overlap.
+    y = table_rect.y + 76
+    for h in episode_history[-7:]:
+        result_name = {"P": "P", "A": "A", "D": "D"}[h["result"]]
+        skill_delta = h["skill_change"]
+        values = [
+            f"{h['episode']:02d}",
+            result_name,
+            str(h["skill"]),
+            f"{skill_delta:+d}",
+            str(h["difficulty"]),
+            f"{h['avg_q_change']:.3f}",
+            str(h["q_updates"]),
+            str(h["learned_states"])
+        ]
+        for value, x in zip(values, x_positions):
+            draw_text(value, x, y, FONT_TINY, TEXT)
         y += 18
 
-
-# ============================================================
-# DRAW MESSAGE
-# ============================================================
-
-def draw_message():
-
-    rendered = font.render(
-        message,
-        True,
-        GREEN if not game_over else RED
+    draw_text(
+        f"Total Q updates: {total_q_updates}   |   "
+        f"Final effective epsilon: {effective_epsilon():.3f}",
+        table_rect.x + 620,
+        table_rect.y + 52,
+        FONT_TINY,
+        MUTED
     )
 
-    screen.blit(
-        rendered,
-        (
-            BOARD_X,
-            BOARD_Y + BOARD_SIZE + 20
+    outcome_rect = pygame.Rect(45, 698, 1313, 125)
+    draw_outcome_strip(outcome_rect)
+
+    draw_centered_text(
+        "Press R to start a new 25-episode session (Q-table learning is preserved)",
+        WIDTH // 2,
+        845,
+        FONT_SMALL,
+        GREEN
+    )
+    draw_text("ESC = Quit", 45, 850, FONT_SMALL, MUTED)
+
+
+def print_terminal_summary():
+    if not session_results:
+        return
+
+    total = len(session_results)
+
+    print("\n" + "=" * 72)
+    print("25 EPISODE SESSION SUMMARY")
+    print("=" * 72)
+    print(f"Player wins       : {player_wins}")
+    print(f"RL agent wins     : {agent_wins}")
+    print(f"Draws             : {draws}")
+    print(f"Player win rate   : {100 * player_wins / total:.2f}%")
+    print(f"RL win rate       : {100 * agent_wins / total:.2f}%")
+    print(f"Draw rate         : {100 * draws / total:.2f}%")
+    print(f"Final expertise   : {player_skill}/100")
+    print(f"Final difficulty  : {difficulty_name} ({difficulty_level}/5)")
+    print(f"Learned states    : {len(Q)}")
+    print(f"Total Q updates   : {total_q_updates}")
+    print(f"Final epsilon     : {effective_epsilon():.4f}")
+    print("Sequence          :", " ".join(session_results))
+
+    print("\nPER-EPISODE ANALYTICS")
+    print("-" * 72)
+    print("Ep  R  Skill dSkill Diff  Avg|dQ|  Max|dQ|  Qupd  States")
+    for h in episode_history:
+        print(
+            f"{h['episode']:02d}  {h['result']}  "
+            f"{h['skill']:>3}   {h['skill_change']:+3d}    "
+            f"{h['difficulty']}    "
+            f"{h['avg_q_change']:.4f}   "
+            f"{h['max_q_change']:.4f}   "
+            f"{h['q_updates']:>3}   "
+            f"{h['learned_states']:>4}"
         )
-    )
 
-    instructions = small_font.render(
-        "Click a cell to play X | R = restart | ESC = quit",
-        True,
-        GRAY
-    )
-
-    screen.blit(
-        instructions,
-        (
-            BOARD_X,
-            BOARD_Y + BOARD_SIZE + 50
-        )
-    )
+    print("=" * 72)
 
 
-# ============================================================
-# MAIN LOOP
-# ============================================================
-
+# ---------------------- Main Loop ----------------------
 running = True
+reset_board()
 
 while running:
-
     clock.tick(60)
-
-    # --------------------------------------------------------
-    # Automatic next episode
-    # --------------------------------------------------------
-
-    if game_over:
-
-        elapsed = (
-            pygame.time.get_ticks() -
-            game_end_timer
-        ) / 1000
-
-        if elapsed >= AUTO_RESTART_DELAY:
-
-            reset_game()
-
-    # --------------------------------------------------------
-    # Events
-    # --------------------------------------------------------
 
     for event in pygame.event.get():
 
         if event.type == pygame.QUIT:
             running = False
 
-        if event.type == pygame.KEYDOWN:
+        elif event.type == pygame.KEYDOWN:
 
             if event.key == pygame.K_ESCAPE:
                 running = False
 
-            if event.key == pygame.K_r:
-                reset_game()
+            elif event.key == pygame.K_r and session_finished:
+                start_new_session()
 
-        if event.type == pygame.MOUSEBUTTONDOWN:
-
-            if event.button == 1:
-
-                mouse_x, mouse_y = event.pos
+        elif event.type == pygame.MOUSEBUTTONDOWN:
+            if event.button == 1 and not session_finished and not game_over:
+                mx, my = event.pos
 
                 if (
-                    BOARD_X <= mouse_x <=
-                    BOARD_X + BOARD_SIZE
-                    and
-                    BOARD_Y <= mouse_y <=
-                    BOARD_Y + BOARD_SIZE
+                    BOARD_X <= mx < BOARD_X + BOARD_SIZE
+                    and BOARD_Y <= my < BOARD_Y + BOARD_SIZE
                 ):
+                    col = (mx - BOARD_X) // CELL_SIZE
+                    row = (my - BOARD_Y) // CELL_SIZE
+                    index = row * GRID_SIZE + col
+                    player_move(index)
 
-                    col = (
-                        mouse_x - BOARD_X
-                    ) // CELL_SIZE
+    if game_over and not session_finished:
+        if pygame.time.get_ticks() >= next_game_time:
+            reset_board()
 
-                    row = (
-                        mouse_y - BOARD_Y
-                    ) // CELL_SIZE
+    screen.fill(BG)
 
-                    position = (
-                        row * 3 + col
-                    )
+    if session_finished:
+        draw_summary_overlay()
+    else:
+        draw_top_text()
+        draw_board()
+        draw_panel()
 
-                    player_move(position)
-
-    # --------------------------------------------------------
-    # Draw
-    # --------------------------------------------------------
-
-    screen.fill(WHITE)
-
-    title = large_font.render(
-        "Adaptive Tic-Tac-Toe",
-        True,
-        BLACK
-    )
-
-    screen.blit(
-        title,
-        (
-            BOARD_X,
-            25
-        )
-    )
-
-    draw_board()
-    draw_message()
-    draw_panel()
-
-    # Game over overlay
-    if game_over:
-
-        overlay = pygame.Surface(
-            (
-                BOARD_SIZE,
-                BOARD_SIZE
-            ),
-            pygame.SRCALPHA
-        )
-
-        overlay.fill(
-            (
-                255,
-                255,
-                255,
-                180
-            )
-        )
-
-        screen.blit(
-            overlay,
-            (
-                BOARD_X,
-                BOARD_Y
-            )
-        )
-
-        if winner == "X":
-            result_text = "YOU WIN"
-
-        elif winner == "O":
-            result_text = "RL WINS"
-
-        else:
-            result_text = "DRAW"
-
-        result_rendered = large_font.render(
-            result_text,
-            True,
-            BLACK
-        )
-
-        screen.blit(
-            result_rendered,
-            (
-                BOARD_X +
-                BOARD_SIZE // 2 -
-                result_rendered.get_width() // 2,
-                BOARD_Y +
-                BOARD_SIZE // 2 -
-                result_rendered.get_height() // 2
-            )
-        )
-
-        next_text = small_font.render(
-            "Next episode starting...",
-            True,
-            BLACK
-        )
-
-        screen.blit(
-            next_text,
-            (
-                BOARD_X +
-                BOARD_SIZE // 2 -
-                next_text.get_width() // 2,
-                BOARD_Y +
-                BOARD_SIZE // 2 + 35
-            )
-        )
+        if game_over and session_results:
+            draw_episode_result_overlay()
 
     pygame.display.flip()
 
-
+print_terminal_summary()
 pygame.quit()
-
-print("\n============================================")
-print("Adaptive Tic-Tac-Toe RL Training Summary")
-print("============================================")
-print("Episodes completed:", episode - 1)
-print("Player wins:", player_wins)
-print("RL wins:", agent_wins)
-print("Draws:", draws)
-print("Final difficulty:", difficulty, difficulty_name)
-print("Learned states:", len(Q))
-print("Final epsilon:", round(epsilon, 4))
-
-if recent_results:
-    recent = recent_results[-SKILL_WINDOW:]
-    print(
-        "Recent player win rate:",
-        round(
-            recent.count("X") / len(recent) * 100,
-            2
-        ),
-        "%"
-    )
-
-print("\nQ-table was preserved across all episodes.")
