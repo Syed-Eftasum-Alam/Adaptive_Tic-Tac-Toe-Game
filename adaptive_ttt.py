@@ -335,6 +335,11 @@ last_action_info = {
 
 recent_updates = deque(maxlen=10)
 
+# Keeps only Q-value updates that produced an actual numerical change.
+# This is used by the UI so learning is visibly demonstrated instead
+# of showing mostly-zero Q-values for a newly encountered board state.
+learned_q_display = deque(maxlen=20)
+
 # ---------------------- Analytics History ----------------------
 episode_history = []
 current_episode_q_changes = []
@@ -547,21 +552,36 @@ def q_update(state, action, reward, next_state, terminal):
 
         target = reward + GAMMA * next_max
 
+    # Standard tabular Q-learning update.
     Q[state][action] += ALPHA * (target - Q[state][action])
+
     q_after = float(Q[state][action])
     delta = q_after - q_before
 
+    # Keep analytics for every update attempt.
     current_episode_q_changes.append(abs(delta))
     total_q_updates += 1
     cumulative_q_updates += 1
 
+    # Full recent-update history (including updates that remain zero).
     recent_updates.appendleft(
         f"a={action + 1:02d} r={reward:+.1f} "
         f"Q:{q_before:+.2f}->{q_after:+.2f} dQ={delta:+.2f}"
     )
 
-    return q_before, q_after
+    # Keep a separate UI history containing only updates that actually
+    # changed the Q-value. This makes learned values clearly visible.
+    if abs(delta) > 1e-6:
+        learned_q_display.appendleft({
+            "action": action,
+            "reward": float(reward),
+            "before": q_before,
+            "after": q_after,
+            "delta": delta,
+            "state": state
+        })
 
+    return q_before, q_after
 
 def make_agent_move():
     global last_agent_state, last_agent_action, last_action_info
@@ -755,6 +775,10 @@ def finish_game(result):
         "avg_q_change": avg_q_change,
         "max_q_change": max_q_change,
         "q_updates": len(current_episode_q_changes),
+        "nonzero_q_updates": sum(
+            1 for change in current_episode_q_changes
+            if abs(change) > 1e-6
+        ),
         "learned_states": len(Q),
         "player_win_rate": player_win_rate()
     })
@@ -787,6 +811,7 @@ def start_new_session(preserve_progress=True):
     episode_history = []
     total_q_updates = 0
     recent_updates.clear()
+    learned_q_display.clear()
 
     if not preserve_progress:
         epsilon = EPSILON_START
@@ -969,45 +994,89 @@ def draw_difficulty_section(rect):
 
 
 def draw_q_moveset(rect):
-    draw_card(rect, "Best Current Q-values")
-
-    state = board_to_state(board)
-    q_values = Q[state]
-    actions = available_actions(board)
-
-    if not actions:
-        draw_text("No legal moves.", rect.x + 14, rect.y + 58, FONT_SMALL, MUTED)
-        return
-
-    items = [(a, float(q_values[a])) for a in actions]
-    items.sort(key=lambda x: x[1], reverse=True)
+    """
+    Display recently learned non-zero Q-values rather than the Q-values of
+    the current board state. The current board may be new and therefore
+    legitimately contain only zeros, which can make learning appear absent.
+    """
+    draw_card(rect, "Recently Learned Q-values")
 
     y = rect.y + 58
-    for a, qv in items[:6]:
-        r = a // 4 + 1
-        c = a % 4 + 1
+
+    if not learned_q_display:
         draw_text(
-            f"Cell {a+1:02d}  r{r}c{c}   Q={qv:+.3f}",
+            "Waiting for a non-zero Q update...",
             rect.x + 14,
             y,
             FONT_SMALL,
-            TEXT
+            MUTED
+        )
+        return
+
+    for item in list(learned_q_display)[:6]:
+        action = item["action"]
+        q_after = item["after"]
+        delta = item["delta"]
+
+        r = action // 4 + 1
+        c = action % 4 + 1
+
+        q_color = GREEN if q_after > 0 else RED if q_after < 0 else TEXT
+
+        draw_text(
+            f"Cell {action + 1:02d}  r{r}c{c}  "
+            f"Q={q_after:+.3f}  dQ={delta:+.3f}",
+            rect.x + 14,
+            y,
+            FONT_SMALL,
+            q_color
         )
         y += 22
 
 
 def draw_recent_updates(rect):
-    draw_card(rect, "Recent Q Updates")
+    """
+    Show only recent updates where the Q-value actually changed.
+    Zero-change transitions are still processed internally and retained
+    in recent_updates for analytics, but are not emphasized in this panel.
+    """
+    draw_card(rect, "Recent Q Changes")
 
     y = rect.y + 58
-    if not recent_updates:
-        draw_text("No Q updates yet.", rect.x + 14, y, FONT_SMALL, MUTED)
+
+    if not learned_q_display:
+        draw_text(
+            "No non-zero Q changes yet.",
+            rect.x + 14,
+            y,
+            FONT_SMALL,
+            MUTED
+        )
         return
 
-    for item in list(recent_updates)[:5]:
-        draw_text(item, rect.x + 14, y, FONT_TINY, MUTED)
-        y += 20
+    for item in list(learned_q_display)[:5]:
+        action = item["action"]
+        reward = item["reward"]
+        q_before = item["before"]
+        q_after = item["after"]
+        delta = item["delta"]
 
+        line = (
+            f"a={action + 1:02d} r={reward:+.1f} "
+            f"Q:{q_before:+.2f}->{q_after:+.2f} "
+            f"dQ={delta:+.2f}"
+        )
+
+        line_color = GREEN if delta > 0 else RED if delta < 0 else MUTED
+
+        draw_text(
+            line,
+            rect.x + 14,
+            y,
+            FONT_TINY,
+            line_color
+        )
+        y += 20
 
 def draw_panel():
     pygame.draw.rect(
@@ -1714,10 +1783,15 @@ def next_export_session_number(username):
             EVALUATION_OUTPUT_DIR,
             f"{safe_name}_session_{number}_difficulty.png"
         )
+        q_update_file = os.path.join(
+            EVALUATION_OUTPUT_DIR,
+            f"{safe_name}_session_{number}_q_value_updates.png"
+        )
 
         if (
             not os.path.exists(summary_file)
             and not os.path.exists(difficulty_file)
+            and not os.path.exists(q_update_file)
         ):
             return number
 
@@ -1729,9 +1803,10 @@ def save_evaluation_images():
     Saves:
       1. Full Pygame summary dashboard as PNG.
       2. Dynamic difficulty graph generated with matplotlib/pyplot.
+      3. Q-value update graph across all 25 episodes using matplotlib/pyplot.
 
-    The difficulty PNG is NOT a screenshot/crop. It is a real pyplot graph
-    generated directly from episode_history.
+    The difficulty and Q-value PNGs are real pyplot graphs generated
+    directly from episode_history, not screenshots/crops.
     """
     if not current_user:
         return None, None
@@ -1748,6 +1823,10 @@ def save_evaluation_images():
     difficulty_path = os.path.join(
         EVALUATION_OUTPUT_DIR,
         f"{safe_name}_session_{session_no}_difficulty.png"
+    )
+    q_update_path = os.path.join(
+        EVALUATION_OUTPUT_DIR,
+        f"{safe_name}_session_{session_no}_q_value_updates.png"
     )
 
     # Keep saving the complete in-game summary dashboard.
@@ -1942,11 +2021,128 @@ def save_evaluation_images():
         )
         plt.close(fig)
 
+    # ---------------------------------------------------------
+    # MATPLOTLIB / PYPLOT Q-VALUE UPDATE GRAPH
+    # ---------------------------------------------------------
+    # This graph is generated only from the Q-learning statistics
+    # collected during the current 25-episode session.
+    if episode_history:
+        q_episodes = [
+            int(h.get("episode", i + 1))
+            for i, h in enumerate(episode_history)
+        ]
+
+        avg_q_changes = [
+            float(h.get("avg_q_change", 0.0))
+            for h in episode_history
+        ]
+
+        max_q_changes = [
+            float(h.get("max_q_change", 0.0))
+            for h in episode_history
+        ]
+
+        nonzero_counts = [
+            int(h.get("nonzero_q_updates", 0))
+            for h in episode_history
+        ]
+
+        fig, ax = plt.subplots(figsize=(12, 6.5))
+
+        # Main learning curves: average and maximum absolute Q-value change
+        # observed inside each episode.
+        ax.plot(
+            q_episodes,
+            avg_q_changes,
+            marker="o",
+            linewidth=2.2,
+            label="Average |ΔQ| per Episode"
+        )
+
+        ax.plot(
+            q_episodes,
+            max_q_changes,
+            marker="s",
+            linewidth=2.0,
+            label="Maximum |ΔQ| per Episode"
+        )
+
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Absolute Q-value Change |ΔQ|")
+        ax.set_title(
+            f"Q-Value Update Progress Across 25 Episodes - "
+            f"{current_user} (Session {session_no})"
+        )
+
+        # Show every episode from the current session.
+        ax.set_xticks(q_episodes)
+        ax.grid(True, alpha=0.3)
+
+        # Add the number of actual non-zero Q changes above the average
+        # curve so the graph also communicates how often learning occurred.
+        for ep, avg_change, count in zip(
+            q_episodes, avg_q_changes, nonzero_counts
+        ):
+            ax.annotate(
+                f"{count}",
+                (ep, avg_change),
+                xytext=(0, 8),
+                textcoords="offset points",
+                ha="center",
+                fontsize=7,
+                alpha=0.75
+            )
+
+        ax.legend(loc="best")
+
+        # Small note explaining the annotation.
+        ax.text(
+            0.01,
+            0.01,
+            "Numbers above points = non-zero Q-value updates in that episode",
+            transform=ax.transAxes,
+            fontsize=8,
+            alpha=0.75
+        )
+
+        fig.tight_layout()
+        fig.savefig(
+            q_update_path,
+            dpi=200,
+            bbox_inches="tight"
+        )
+        plt.close(fig)
+
+    else:
+        # Fallback image in the unlikely event that no history is available.
+        fig, ax = plt.subplots(figsize=(12, 6.5))
+        ax.text(
+            0.5,
+            0.5,
+            "No Q-value update history available.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes
+        )
+        ax.set_title(
+            f"Q-Value Update Progress - {current_user}"
+        )
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Absolute Q-value Change |ΔQ|")
+        fig.tight_layout()
+        fig.savefig(
+            q_update_path,
+            dpi=200,
+            bbox_inches="tight"
+        )
+        plt.close(fig)
+
     print("\nEvaluation images automatically saved:")
     print(f"  Full summary       : {summary_path}")
     print(f"  Pyplot difficulty  : {difficulty_path}")
+    print(f"  Pyplot Q updates   : {q_update_path}")
 
-    return summary_path, difficulty_path
+    return summary_path, difficulty_path, q_update_path
 
 
 def draw_summary_overlay():
