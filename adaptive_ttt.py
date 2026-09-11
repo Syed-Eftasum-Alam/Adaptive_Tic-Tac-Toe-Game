@@ -1,6 +1,9 @@
 import pygame
 import numpy as np
+import matplotlib.pyplot as plt
 import random
+import json
+import os
 from collections import defaultdict, deque
 
 # ============================================================
@@ -72,6 +75,202 @@ EPSILON_DECAY = 0.95
 TOTAL_EPISODES = 25
 
 Q = defaultdict(lambda: np.zeros(GRID_SIZE * GRID_SIZE, dtype=np.float32))
+
+# ---------------------- User Login / Persistence ----------------------
+# The file is saved beside this Python script. It is plain-text JSON,
+# so usernames, performance statistics and learned Q-values are readable.
+DATA_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "users_data.txt")
+
+users_data = {}
+current_user = None
+current_user_key = None
+app_mode = "login"
+evaluation_images_saved = False
+login_input = ""
+login_message = "Enter your username to login, or create a new account."
+login_message_color = MUTED
+
+# Persistent values for the currently logged-in user.
+recent_performance_results = []
+cumulative_games = 0
+cumulative_player_wins = 0
+cumulative_agent_wins = 0
+cumulative_draws = 0
+cumulative_q_updates = 0
+
+
+def load_users_data():
+    global users_data
+    if not os.path.exists(DATA_FILE):
+        users_data = {}
+        return
+
+    try:
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            raw = f.read().strip()
+            users_data = json.loads(raw) if raw else {}
+            if not isinstance(users_data, dict):
+                users_data = {}
+    except (OSError, json.JSONDecodeError):
+        users_data = {}
+
+
+def write_users_data():
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(users_data, f, indent=2)
+    except OSError as exc:
+        print("Could not save user data:", exc)
+
+
+def default_profile(display_name):
+    return {
+        "username": display_name,
+        "player_skill": 50,
+        "difficulty_level": 1,
+        "difficulty_name": "Very Easy",
+        "epsilon": EPSILON_START,
+        "recent_results": [],
+        "cumulative_games": 0,
+        "cumulative_player_wins": 0,
+        "cumulative_agent_wins": 0,
+        "cumulative_draws": 0,
+        "cumulative_q_updates": 0,
+        "q_table": {},
+        "last_q_value": 0.0
+    }
+
+
+def serialize_q_table():
+    saved = {}
+    for state, values in Q.items():
+        # Store only states that actually contain learned/non-zero information.
+        if np.any(values != 0):
+            saved[state] = [float(v) for v in values]
+    return saved
+
+
+def restore_q_table(saved_q):
+    global Q
+    Q = defaultdict(lambda: np.zeros(GRID_SIZE * GRID_SIZE, dtype=np.float32))
+
+    if not isinstance(saved_q, dict):
+        return
+
+    for state, values in saved_q.items():
+        try:
+            arr = np.array(values, dtype=np.float32)
+            if len(arr) == GRID_SIZE * GRID_SIZE:
+                Q[state] = arr
+        except (TypeError, ValueError):
+            pass
+
+
+def save_current_user():
+    if current_user_key is None:
+        return
+
+    profile = users_data.setdefault(current_user_key, default_profile(current_user or current_user_key))
+    profile.update({
+        "username": current_user,
+        "player_skill": int(player_skill),
+        "difficulty_level": int(difficulty_level),
+        "difficulty_name": difficulty_name,
+        "epsilon": float(epsilon),
+        "recent_results": list(recent_performance_results[-10:]),
+        "cumulative_games": int(cumulative_games),
+        "cumulative_player_wins": int(cumulative_player_wins),
+        "cumulative_agent_wins": int(cumulative_agent_wins),
+        "cumulative_draws": int(cumulative_draws),
+        "cumulative_q_updates": int(cumulative_q_updates),
+        "q_table": serialize_q_table(),
+        "last_q_value": float(last_action_info.get("q_after", 0.0))
+    })
+    write_users_data()
+
+
+def login_existing_user(username):
+    global current_user, current_user_key, app_mode
+    global player_skill, difficulty_level, difficulty_name, epsilon
+    global recent_performance_results
+    global cumulative_games, cumulative_player_wins, cumulative_agent_wins
+    global cumulative_draws, cumulative_q_updates
+
+    key = username.strip().lower()
+    if not key or key not in users_data:
+        return False
+
+    profile = users_data[key]
+    current_user_key = key
+    current_user = profile.get("username", username.strip())
+
+    player_skill = int(profile.get("player_skill", 50))
+    difficulty_level = int(profile.get("difficulty_level", 1))
+    difficulty_name = profile.get("difficulty_name", "Very Easy")
+    epsilon = float(profile.get("epsilon", EPSILON_START))
+
+    recent_performance_results = list(profile.get("recent_results", []))[-10:]
+    cumulative_games = int(profile.get("cumulative_games", 0))
+    cumulative_player_wins = int(profile.get("cumulative_player_wins", 0))
+    cumulative_agent_wins = int(profile.get("cumulative_agent_wins", 0))
+    cumulative_draws = int(profile.get("cumulative_draws", 0))
+    cumulative_q_updates = int(profile.get("cumulative_q_updates", 0))
+
+    restore_q_table(profile.get("q_table", {}))
+    start_new_session(preserve_progress=True)
+    app_mode = "game"
+    return True
+
+
+def create_new_user(username):
+    global current_user, current_user_key, app_mode
+    global player_skill, difficulty_level, difficulty_name, epsilon
+    global recent_performance_results
+    global cumulative_games, cumulative_player_wins, cumulative_agent_wins
+    global cumulative_draws, cumulative_q_updates, Q
+
+    clean = username.strip()
+    key = clean.lower()
+    if not clean or key in users_data:
+        return False
+
+    users_data[key] = default_profile(clean)
+    write_users_data()
+
+    current_user = clean
+    current_user_key = key
+    player_skill = 50
+    difficulty_level = 1
+    difficulty_name = "Very Easy"
+    epsilon = EPSILON_START
+    recent_performance_results = []
+    cumulative_games = 0
+    cumulative_player_wins = 0
+    cumulative_agent_wins = 0
+    cumulative_draws = 0
+    cumulative_q_updates = 0
+    Q = defaultdict(lambda: np.zeros(GRID_SIZE * GRID_SIZE, dtype=np.float32))
+
+    start_new_session(preserve_progress=True)
+    save_current_user()
+    app_mode = "game"
+    return True
+
+
+def logout_user():
+    global current_user, current_user_key, app_mode
+    global login_input, login_message, login_message_color
+
+    save_current_user()
+    current_user = None
+    current_user_key = None
+    login_input = ""
+    login_message = "Enter your username to login, or create a new account."
+    login_message_color = MUTED
+    app_mode = "login"
+
+
+load_users_data()
 
 # ---------------------- Winning Lines ----------------------
 WINNING_LINES = []
@@ -180,14 +379,13 @@ def reset_board():
 def estimate_player_skill():
     global player_skill
 
-    if not session_results:
+    # Skill is based on the persistent recent history, not only this session.
+    if not recent_performance_results:
         player_skill = 50
         return
 
     score = 50
-
-    # Adapt using the most recent 10 episodes.
-    for result in session_results[-10:]:
+    for result in recent_performance_results[-10:]:
         if result == "P":
             score += 10
         elif result == "D":
@@ -201,8 +399,9 @@ def estimate_player_skill():
 def update_difficulty():
     global difficulty_name, difficulty_level
 
-    # First 3 completed episodes remain Very Easy.
-    if len(session_results) < 3:
+    # Brand-new users get a short beginner period. Returning users keep
+    # the level saved in their profile and continue from that point.
+    if cumulative_games < 3:
         difficulty_name = "Very Easy"
         difficulty_level = 1
         return
@@ -224,7 +423,6 @@ def update_difficulty():
     else:
         difficulty_name = "Very Easy"
         difficulty_level = 1
-
 
 def player_win_rate():
     if not session_results:
@@ -333,7 +531,7 @@ def choose_agent_action():
 
 
 def q_update(state, action, reward, next_state, terminal):
-    global total_q_updates
+    global total_q_updates, cumulative_q_updates
 
     q_before = float(Q[state][action])
 
@@ -355,6 +553,7 @@ def q_update(state, action, reward, next_state, terminal):
 
     current_episode_q_changes.append(abs(delta))
     total_q_updates += 1
+    cumulative_q_updates += 1
 
     recent_updates.appendleft(
         f"a={action + 1:02d} r={reward:+.1f} "
@@ -507,19 +706,28 @@ def finish_game(result):
     global game_over, player_wins, agent_wins, draws, winning_line
     global epsilon, session_finished, next_game_time
     global previous_episode_skill
+    global cumulative_games, cumulative_player_wins
+    global cumulative_agent_wins, cumulative_draws
 
     game_over = True
     session_results.append(result)
+    recent_performance_results.append(result)
+    del recent_performance_results[:-10]
+
+    cumulative_games += 1
 
     if result == "P":
         _, winning_line = check_winner(board, PLAYER)
         player_wins += 1
+        cumulative_player_wins += 1
     elif result == "A":
         _, winning_line = check_winner(board, AGENT)
         agent_wins += 1
+        cumulative_agent_wins += 1
     else:
         winning_line = None
         draws += 1
+        cumulative_draws += 1
 
     old_skill = player_skill
 
@@ -553,35 +761,40 @@ def finish_game(result):
 
     previous_episode_skill = player_skill
 
+    # Autosave after every episode so progress survives closing the program.
+    save_current_user()
+
     if len(session_results) >= TOTAL_EPISODES:
         session_finished = True
     else:
         next_game_time = pygame.time.get_ticks() + 1200
 
-
-def start_new_session():
+def start_new_session(preserve_progress=True):
     global session_results, player_wins, agent_wins, draws
     global epsilon, session_finished, player_skill
     global difficulty_name, difficulty_level
     global last_action_info, episode_history
     global total_q_updates, previous_episode_skill
+    global evaluation_images_saved
 
     session_results = []
     player_wins = 0
     agent_wins = 0
     draws = 0
-
-    epsilon = EPSILON_START
-    player_skill = 50
-    previous_episode_skill = 50
-
-    difficulty_name = "Very Easy"
-    difficulty_level = 1
     session_finished = False
+    evaluation_images_saved = False
 
     episode_history = []
     total_q_updates = 0
     recent_updates.clear()
+
+    if not preserve_progress:
+        epsilon = EPSILON_START
+        player_skill = 50
+        difficulty_name = "Very Easy"
+        difficulty_level = 1
+
+    previous_episode_skill = player_skill
 
     last_action_info = {
         "state": "",
@@ -592,9 +805,8 @@ def start_new_session():
         "delta": 0.0
     }
 
-    # Q-table is intentionally preserved so the agent keeps learning
-    # between 25-episode sessions.
     reset_board()
+
 
 
 # ---------------------- Drawing Helpers ----------------------
@@ -810,7 +1022,7 @@ def draw_panel():
         current_episode = TOTAL_EPISODES
 
     draw_text(
-        f"Episode {current_episode} / {TOTAL_EPISODES}",
+        f"{current_user}  |  Episode {current_episode} / {TOTAL_EPISODES}",
         PANEL_X + 20,
         PANEL_Y + 15,
         FONT_BIG
@@ -887,7 +1099,7 @@ def draw_panel():
         FONT_SMALL
     )
     draw_text(
-        f"Total Q updates: {total_q_updates}",
+        f"Q updates (session): {total_q_updates}",
         footer_rect.x + 220,
         footer_rect.y + 57,
         FONT_SMALL
@@ -895,7 +1107,7 @@ def draw_panel():
 
     results = "".join(session_results[-18:]) or "-"
     draw_text(
-        f"Recent outcomes: {results}",
+        f"Recent outcomes: {results}   |   All-time games: {cumulative_games}",
         footer_rect.x + 14,
         footer_rect.y + 83,
         FONT_SMALL,
@@ -992,6 +1204,91 @@ def draw_episode_result_overlay():
     )
 
 
+# ---------------------- Login Screen ----------------------
+
+def draw_login_screen():
+    screen.fill(BG)
+
+    draw_centered_text("Adaptive Tic-Tac-Toe", WIDTH // 2, 120, FONT_TITLE, TEXT)
+    draw_centered_text(
+        "Q-learning profiles with persistent difficulty and performance",
+        WIDTH // 2, 170, FONT, MUTED
+    )
+
+    card = pygame.Rect(WIDTH // 2 - 330, 250, 660, 390)
+    pygame.draw.rect(screen, PANEL_BG, card, border_radius=18)
+    pygame.draw.rect(screen, BORDER, card, 2, border_radius=18)
+
+    draw_text("USERNAME", card.x + 55, card.y + 55, FONT_SMALL, MUTED)
+
+    input_rect = pygame.Rect(card.x + 55, card.y + 90, card.w - 110, 62)
+    pygame.draw.rect(screen, CARD_BG, input_rect, border_radius=10)
+    pygame.draw.rect(screen, BLUE, input_rect, 2, border_radius=10)
+
+    display_input = login_input if login_input else "Type username..."
+    display_color = TEXT if login_input else MUTED
+    draw_text(display_input, input_rect.x + 18, input_rect.y + 18, FONT_MED, display_color)
+
+    login_btn = pygame.Rect(card.x + 55, card.y + 180, 260, 62)
+    create_btn = pygame.Rect(card.x + 345, card.y + 180, 260, 62)
+
+    pygame.draw.rect(screen, BLUE, login_btn, border_radius=10)
+    pygame.draw.rect(screen, GREEN, create_btn, border_radius=10)
+
+    draw_centered_text("LOGIN", login_btn.centerx, login_btn.y + 18, FONT_MED, TEXT)
+    draw_centered_text("CREATE ACCOUNT", create_btn.centerx, create_btn.y + 18, FONT_MED, BG)
+
+    draw_centered_text(
+        login_message,
+        WIDTH // 2,
+        card.y + 275,
+        FONT_SMALL,
+        login_message_color
+    )
+
+    draw_centered_text(
+        "No password is required. Your learning progress is saved automatically.",
+        WIDTH // 2, card.y + 320, FONT_SMALL, MUTED
+    )
+    draw_centered_text(
+        "Enter = Login    |    Ctrl+Enter = Create Account",
+        WIDTH // 2, card.y + 350, FONT_TINY, MUTED
+    )
+
+    return input_rect, login_btn, create_btn
+
+
+def process_login_attempt(create=False):
+    global login_message, login_message_color, login_input
+
+    username = login_input.strip()
+    if not username:
+        login_message = "Please enter a username."
+        login_message_color = RED
+        return
+
+    key = username.lower()
+
+    if create:
+        if key in users_data:
+            login_message = "That username already exists. Click LOGIN instead."
+            login_message_color = YELLOW
+            return
+
+        if create_new_user(username):
+            login_message = "Account created."
+            login_message_color = GREEN
+    else:
+        if key not in users_data:
+            login_message = "New user detected. Click CREATE ACCOUNT to register this username."
+            login_message_color = YELLOW
+            return
+
+        if login_existing_user(username):
+            login_message = "Login successful."
+            login_message_color = GREEN
+
+
 # ---------------------- Summary Charts ----------------------
 
 def draw_line_chart(rect, title, values, min_value=None, max_value=None,
@@ -1085,6 +1382,262 @@ def draw_line_chart(rect, title, values, min_value=None, max_value=None,
     )
 
 
+
+def draw_dynamic_difficulty_chart(rect, history):
+    """
+    Draw difficulty directly from the main game's episode_history.
+
+    Markers:
+        Green triangle  = difficulty increased
+        Red triangle    = difficulty decreased
+        Gray circle     = difficulty unchanged
+
+    This uses the real difficulty value stored after every episode.
+    """
+    draw_card(rect, "Dynamic Difficulty Change")
+
+    if not history:
+        draw_text(
+            "No difficulty history yet.",
+            rect.x + 16,
+            rect.y + 62,
+            FONT_SMALL,
+            MUTED
+        )
+        return
+
+    difficulties = [int(h.get("difficulty", 1)) for h in history]
+
+    # Calculate episode-to-episode difficulty change.
+    changes = [0]
+    for i in range(1, len(difficulties)):
+        changes.append(difficulties[i] - difficulties[i - 1])
+
+    plot_left = rect.x + 76
+    plot_right = rect.right - 18
+    plot_top = rect.y + 55
+    plot_bottom = rect.bottom - 43
+
+    # Horizontal lines for the five discrete difficulty levels.
+    level_names = {
+        1: "Very Easy",
+        2: "Easy",
+        3: "Normal",
+        4: "Hard",
+        5: "Expert"
+    }
+
+    def map_y(level):
+        ratio = (level - 1) / 4
+        return int(plot_bottom - ratio * (plot_bottom - plot_top))
+
+    for level in range(1, 6):
+        y = map_y(level)
+        pygame.draw.line(
+            screen,
+            BORDER,
+            (plot_left, y),
+            (plot_right, y),
+            1
+        )
+        draw_text(
+            f"{level}",
+            rect.x + 16,
+            y - 7,
+            FONT_TINY,
+            MUTED
+        )
+        draw_text(
+            level_names[level],
+            rect.x + 31,
+            y - 7,
+            FONT_TINY,
+            MUTED
+        )
+
+    # Axes.
+    pygame.draw.line(
+        screen, MUTED,
+        (plot_left, plot_top),
+        (plot_left, plot_bottom),
+        1
+    )
+    pygame.draw.line(
+        screen, MUTED,
+        (plot_left, plot_bottom),
+        (plot_right, plot_bottom),
+        1
+    )
+
+    n = len(difficulties)
+    points = []
+
+    for i, level in enumerate(difficulties):
+        if n == 1:
+            x = (plot_left + plot_right) // 2
+        else:
+            x = int(
+                plot_left
+                + i * (plot_right - plot_left) / (n - 1)
+            )
+
+        y = map_y(level)
+        points.append((x, y))
+
+    # Draw a step-like connection to emphasize discrete difficulty levels.
+    if len(points) > 1:
+        for i in range(len(points) - 1):
+            x1, y1 = points[i]
+            x2, y2 = points[i + 1]
+            middle_x = (x1 + x2) // 2
+
+            pygame.draw.line(
+                screen,
+                PURPLE,
+                (x1, y1),
+                (middle_x, y1),
+                3
+            )
+            pygame.draw.line(
+                screen,
+                PURPLE,
+                (middle_x, y1),
+                (middle_x, y2),
+                3
+            )
+            pygame.draw.line(
+                screen,
+                PURPLE,
+                (middle_x, y2),
+                (x2, y2),
+                3
+            )
+
+    # Mark each episode according to difficulty movement.
+    for i, ((x, y), change) in enumerate(zip(points, changes)):
+        if i == 0:
+            pygame.draw.circle(screen, PURPLE, (x, y), 5)
+            continue
+
+        if change > 0:
+            marker_color = GREEN
+
+            # Up triangle.
+            pygame.draw.polygon(
+                screen,
+                marker_color,
+                [
+                    (x, y - 7),
+                    (x - 6, y + 5),
+                    (x + 6, y + 5)
+                ]
+            )
+
+            draw_text(
+                f"+{change}",
+                x - 7,
+                y - 24,
+                FONT_TINY,
+                GREEN
+            )
+
+        elif change < 0:
+            marker_color = RED
+
+            # Down triangle.
+            pygame.draw.polygon(
+                screen,
+                marker_color,
+                [
+                    (x, y + 7),
+                    (x - 6, y - 5),
+                    (x + 6, y - 5)
+                ]
+            )
+
+            draw_text(
+                str(change),
+                x - 7,
+                y + 10,
+                FONT_TINY,
+                RED
+            )
+
+        else:
+            pygame.draw.circle(
+                screen,
+                MUTED,
+                (x, y),
+                4
+            )
+
+    # Episode labels.
+    draw_text(
+        "1",
+        plot_left - 3,
+        plot_bottom + 9,
+        FONT_TINY,
+        MUTED
+    )
+    draw_text(
+        str(n),
+        plot_right - 12,
+        plot_bottom + 9,
+        FONT_TINY,
+        MUTED
+    )
+
+    # Compact legend.
+    legend_y = rect.bottom - 21
+
+    pygame.draw.polygon(
+        screen,
+        GREEN,
+        [
+            (rect.x + 105, legend_y - 5),
+            (rect.x + 99, legend_y + 5),
+            (rect.x + 111, legend_y + 5)
+        ]
+    )
+    draw_text(
+        "Increased",
+        rect.x + 117,
+        legend_y - 7,
+        FONT_TINY,
+        MUTED
+    )
+
+    pygame.draw.polygon(
+        screen,
+        RED,
+        [
+            (rect.x + 205, legend_y + 5),
+            (rect.x + 199, legend_y - 5),
+            (rect.x + 211, legend_y - 5)
+        ]
+    )
+    draw_text(
+        "Decreased",
+        rect.x + 217,
+        legend_y - 7,
+        FONT_TINY,
+        MUTED
+    )
+
+    pygame.draw.circle(
+        screen,
+        MUTED,
+        (rect.x + 318, legend_y),
+        4
+    )
+    draw_text(
+        "Unchanged",
+        rect.x + 330,
+        legend_y - 7,
+        FONT_TINY,
+        MUTED
+    )
+
 def draw_outcome_strip(rect):
     draw_card(rect, "Episode Outcomes")
 
@@ -1130,13 +1683,279 @@ def draw_outcome_strip(rect):
     )
 
 
+
+EVALUATION_OUTPUT_DIR = "evaluation_output"
+
+
+def sanitize_export_name(value):
+    cleaned = "".join(
+        ch if ch.isalnum() or ch in "-_" else "_"
+        for ch in str(value)
+    )
+    return cleaned or "user"
+
+
+def next_export_session_number(username):
+    """
+    Returns the next unused export number for this user's PNG files.
+    Existing screenshots are never overwritten.
+    """
+    os.makedirs(EVALUATION_OUTPUT_DIR, exist_ok=True)
+
+    safe_name = sanitize_export_name(username)
+    number = 1
+
+    while True:
+        summary_file = os.path.join(
+            EVALUATION_OUTPUT_DIR,
+            f"{safe_name}_session_{number}_summary.png"
+        )
+        difficulty_file = os.path.join(
+            EVALUATION_OUTPUT_DIR,
+            f"{safe_name}_session_{number}_difficulty.png"
+        )
+
+        if (
+            not os.path.exists(summary_file)
+            and not os.path.exists(difficulty_file)
+        ):
+            return number
+
+        number += 1
+
+
+def save_evaluation_images():
+    """
+    Saves:
+      1. Full Pygame summary dashboard as PNG.
+      2. Dynamic difficulty graph generated with matplotlib/pyplot.
+
+    The difficulty PNG is NOT a screenshot/crop. It is a real pyplot graph
+    generated directly from episode_history.
+    """
+    if not current_user:
+        return None, None
+
+    os.makedirs(EVALUATION_OUTPUT_DIR, exist_ok=True)
+
+    safe_name = sanitize_export_name(current_user)
+    session_no = next_export_session_number(current_user)
+
+    summary_path = os.path.join(
+        EVALUATION_OUTPUT_DIR,
+        f"{safe_name}_session_{session_no}_summary.png"
+    )
+    difficulty_path = os.path.join(
+        EVALUATION_OUTPUT_DIR,
+        f"{safe_name}_session_{session_no}_difficulty.png"
+    )
+
+    # Keep saving the complete in-game summary dashboard.
+    pygame.image.save(screen, summary_path)
+
+    # ---------------------------------------------------------
+    # MATPLOTLIB / PYPLOT DYNAMIC DIFFICULTY GRAPH
+    # ---------------------------------------------------------
+    if episode_history:
+        episodes = [
+            int(h.get("episode", i + 1))
+            for i, h in enumerate(episode_history)
+        ]
+
+        difficulties = [
+            int(h.get("difficulty", 1))
+            for h in episode_history
+        ]
+
+        skills = [
+            float(h.get("skill", 0))
+            for h in episode_history
+        ]
+
+        # Difficulty change from the previous episode.
+        changes = [0]
+        for i in range(1, len(difficulties)):
+            changes.append(difficulties[i] - difficulties[i - 1])
+
+        fig, ax = plt.subplots(figsize=(12, 6.5))
+
+        # Discrete difficulty should look like steps rather than a smooth curve.
+        ax.step(
+            episodes,
+            difficulties,
+            where="mid",
+            linewidth=2.5,
+            label="Difficulty Level"
+        )
+
+        # Plot all episode points.
+        ax.scatter(
+            episodes,
+            difficulties,
+            s=45,
+            zorder=3,
+            label="Episode Difficulty"
+        )
+
+        # Mark increases/decreases separately.
+        increase_eps = [
+            ep for ep, change in zip(episodes, changes)
+            if change > 0
+        ]
+        increase_levels = [
+            level for level, change in zip(difficulties, changes)
+            if change > 0
+        ]
+
+        decrease_eps = [
+            ep for ep, change in zip(episodes, changes)
+            if change < 0
+        ]
+        decrease_levels = [
+            level for level, change in zip(difficulties, changes)
+            if change < 0
+        ]
+
+        if increase_eps:
+            ax.scatter(
+                increase_eps,
+                increase_levels,
+                marker="^",
+                s=130,
+                zorder=4,
+                label="Difficulty Increased"
+            )
+
+        if decrease_eps:
+            ax.scatter(
+                decrease_eps,
+                decrease_levels,
+                marker="v",
+                s=130,
+                zorder=4,
+                label="Difficulty Decreased"
+            )
+
+        # Label actual difficulty transitions.
+        for ep, level, change in zip(episodes, difficulties, changes):
+            if change > 0:
+                ax.annotate(
+                    f"+{change}",
+                    (ep, level),
+                    xytext=(0, 13),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=9
+                )
+            elif change < 0:
+                ax.annotate(
+                    str(change),
+                    (ep, level),
+                    xytext=(0, -18),
+                    textcoords="offset points",
+                    ha="center",
+                    fontsize=9
+                )
+
+        difficulty_labels = [
+            "Very Easy",
+            "Easy",
+            "Normal",
+            "Hard",
+            "Expert"
+        ]
+
+        ax.set_yticks([1, 2, 3, 4, 5])
+        ax.set_yticklabels(
+            [
+                "1 - Very Easy",
+                "2 - Easy",
+                "3 - Normal",
+                "4 - Hard",
+                "5 - Expert"
+            ]
+        )
+
+        ax.set_ylim(0.5, 5.5)
+        ax.set_xlim(
+            max(0.5, min(episodes) - 0.5),
+            max(episodes) + 0.5
+        )
+
+        # For 25 episodes, every episode can be shown clearly.
+        ax.set_xticks(episodes)
+
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Difficulty Level")
+        ax.set_title(
+            f"Dynamic Difficulty Adaptation - {current_user} "
+            f"(Session {session_no})"
+        )
+
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="best")
+
+        # Add a compact expertise note beneath each transition where useful.
+        # This helps connect the player's estimated skill to difficulty changes.
+        for ep, level, skill, change in zip(
+            episodes, difficulties, skills, changes
+        ):
+            if change != 0:
+                ax.annotate(
+                    f"Skill={skill:.0f}",
+                    (ep, level),
+                    xytext=(8, 0),
+                    textcoords="offset points",
+                    fontsize=8,
+                    alpha=0.75
+                )
+
+        fig.tight_layout()
+        fig.savefig(
+            difficulty_path,
+            dpi=200,
+            bbox_inches="tight"
+        )
+        plt.close(fig)
+
+    else:
+        # Still create a pyplot image if there is unexpectedly no history.
+        fig, ax = plt.subplots(figsize=(12, 6.5))
+        ax.text(
+            0.5,
+            0.5,
+            "No episode difficulty history available.",
+            ha="center",
+            va="center",
+            transform=ax.transAxes
+        )
+        ax.set_title(
+            f"Dynamic Difficulty Adaptation - {current_user}"
+        )
+        ax.set_xlabel("Episode")
+        ax.set_ylabel("Difficulty Level")
+        fig.tight_layout()
+        fig.savefig(
+            difficulty_path,
+            dpi=200,
+            bbox_inches="tight"
+        )
+        plt.close(fig)
+
+    print("\nEvaluation images automatically saved:")
+    print(f"  Full summary       : {summary_path}")
+    print(f"  Pyplot difficulty  : {difficulty_path}")
+
+    return summary_path, difficulty_path
+
+
 def draw_summary_overlay():
     # Full-screen dashboard.
     screen.fill(BG)
 
-    draw_text("25-Episode Learning Summary", 45, 22, FONT_TITLE)
+    draw_text(f"25-Episode Learning Summary - {current_user}", 45, 22, FONT_TITLE)
     draw_text(
-        "Adaptive difficulty, expertise progression and Q-learning behavior",
+        f"Persistent profile | All-time games: {cumulative_games} | All-time Q updates: {cumulative_q_updates}",
         47,
         67,
         FONT,
@@ -1226,13 +2045,9 @@ def draw_summary_overlay():
         line_color=CYAN
     )
 
-    draw_line_chart(
+    draw_dynamic_difficulty_chart(
         pygame.Rect(45 + 2 * (chart_w + gap), chart_y, chart_w, chart_h),
-        "Difficulty Level by Episode",
-        difficulties,
-        min_value=1,
-        max_value=5,
-        line_color=PURPLE
+        episode_history
     )
 
     # Second row: epsilon + detailed episode table + outcomes.
@@ -1297,7 +2112,7 @@ def draw_summary_overlay():
     draw_outcome_strip(outcome_rect)
 
     draw_centered_text(
-        "Press R to start a new 25-episode session (Q-table learning is preserved)",
+        "R = New 25-episode session   |   L = Logout   |   Q-table and difficulty are saved",
         WIDTH // 2,
         845,
         FONT_SMALL,
@@ -1352,49 +2167,97 @@ reset_board()
 while running:
     clock.tick(60)
 
+    # Login UI rectangles are recreated each frame for click handling.
+    login_input_rect = None
+    login_button_rect = None
+    create_button_rect = None
+
+    if app_mode == "login":
+        login_input_rect, login_button_rect, create_button_rect = draw_login_screen()
+        pygame.display.flip()
+
     for event in pygame.event.get():
 
         if event.type == pygame.QUIT:
+            save_current_user()
             running = False
 
-        elif event.type == pygame.KEYDOWN:
+        elif app_mode == "login":
+            if event.type == pygame.KEYDOWN:
+                if event.key == pygame.K_ESCAPE:
+                    running = False
+                elif event.key == pygame.K_BACKSPACE:
+                    login_input = login_input[:-1]
+                elif event.key == pygame.K_RETURN:
+                    ctrl_pressed = bool(event.mod & pygame.KMOD_CTRL)
+                    process_login_attempt(create=ctrl_pressed)
+                else:
+                    if event.unicode and event.unicode.isprintable() and len(login_input) < 24:
+                        # Keep usernames simple and safe for a text-based profile file.
+                        if event.unicode.isalnum() or event.unicode in "_-.":
+                            login_input += event.unicode
 
-            if event.key == pygame.K_ESCAPE:
-                running = False
+            elif event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                if login_button_rect and login_button_rect.collidepoint(event.pos):
+                    process_login_attempt(create=False)
+                elif create_button_rect and create_button_rect.collidepoint(event.pos):
+                    process_login_attempt(create=True)
 
-            elif event.key == pygame.K_r and session_finished:
-                start_new_session()
+        elif app_mode == "game":
+            if event.type == pygame.KEYDOWN:
 
-        elif event.type == pygame.MOUSEBUTTONDOWN:
-            if event.button == 1 and not session_finished and not game_over:
-                mx, my = event.pos
+                if event.key == pygame.K_ESCAPE:
+                    save_current_user()
+                    running = False
 
-                if (
-                    BOARD_X <= mx < BOARD_X + BOARD_SIZE
-                    and BOARD_Y <= my < BOARD_Y + BOARD_SIZE
-                ):
-                    col = (mx - BOARD_X) // CELL_SIZE
-                    row = (my - BOARD_Y) // CELL_SIZE
-                    index = row * GRID_SIZE + col
-                    player_move(index)
+                elif event.key == pygame.K_l:
+                    logout_user()
 
-    if game_over and not session_finished:
-        if pygame.time.get_ticks() >= next_game_time:
-            reset_board()
+                elif event.key == pygame.K_r and session_finished:
+                    # Start another 25 episodes without resetting learned progress.
+                    start_new_session(preserve_progress=True)
 
-    screen.fill(BG)
+            elif event.type == pygame.MOUSEBUTTONDOWN:
+                if event.button == 1 and not session_finished and not game_over:
+                    mx, my = event.pos
 
-    if session_finished:
-        draw_summary_overlay()
-    else:
-        draw_top_text()
-        draw_board()
-        draw_panel()
+                    if (
+                        BOARD_X <= mx < BOARD_X + BOARD_SIZE
+                        and BOARD_Y <= my < BOARD_Y + BOARD_SIZE
+                    ):
+                        col = (mx - BOARD_X) // CELL_SIZE
+                        row = (my - BOARD_Y) // CELL_SIZE
+                        index = row * GRID_SIZE + col
+                        player_move(index)
 
-        if game_over and session_results:
-            draw_episode_result_overlay()
+    if app_mode == "game":
+        if game_over and not session_finished:
+            if pygame.time.get_ticks() >= next_game_time:
+                reset_board()
 
-    pygame.display.flip()
+        screen.fill(BG)
 
+        if session_finished:
+            draw_summary_overlay()
+
+            # Save the dashboard and difficulty graph once per completed session.
+            if not evaluation_images_saved:
+                pygame.display.flip()
+                save_evaluation_images()
+                evaluation_images_saved = True
+        else:
+            draw_top_text()
+            draw_board()
+            draw_panel()
+
+            # User can logout at any time with L.
+            draw_text(f"Logged in: {current_user}   |   L = Logout", 990, 35, FONT_SMALL, MUTED)
+
+            if game_over and session_results:
+                draw_episode_result_overlay()
+
+        pygame.display.flip()
+
+save_current_user()
 print_terminal_summary()
 pygame.quit()
