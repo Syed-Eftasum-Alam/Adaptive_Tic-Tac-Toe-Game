@@ -53,7 +53,7 @@ The first three games remain at Very Easy while enough results are collected. Hi
 
 - State: the 3x3 board encoded as a nine-character string.
 - Actions: the nine board positions.
-- Learning rate (`alpha`): `0.35`.
+- Learning rate (`alpha`): `0.30`.
 - Discount factor (`gamma`): `0.90`.
 - Exploration starts at `1.0`, decays after each episode, and has a minimum of `0.05`.
 - Rewards: RL win `+10`, draw `+3`, player win `-10`.
