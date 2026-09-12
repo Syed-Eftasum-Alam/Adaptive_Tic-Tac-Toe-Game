@@ -1,0 +1,5 @@
+model,skill,difficulty,epsilon,learned_states,q_updates
+Full Model,70.8,3.6,0.05,209.8,307.8
+Without Adaptive Difficulty,98.4,3.0,0.05,205.8,295.6
+Without Q-Learning,74.4,3.8,1.0,0.0,0.0
+Without Tactical Policy,100.0,5.0,0.05,198.4,284.8

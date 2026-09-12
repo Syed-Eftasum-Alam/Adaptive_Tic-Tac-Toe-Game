@@ -1,0 +1,5 @@
+model,win_rate_mean,win_rate_std,player_win_mean,player_win_std,draw_mean,draw_std,reward_mean,reward_std,moves_mean,moves_std
+Full Model,0.0,0.0,100.0,0.0,0.0,0.0,-10.0,0.0,5.0200000000000005,0.020000000000000157
+Without Adaptive Difficulty,0.0,0.0,100.0,0.0,0.0,0.0,-10.0,0.0,5.044,0.029664793948382614
+Without Q-Learning,0.0,0.0,100.0,0.0,0.0,0.0,-10.0,0.0,5.016,0.016733200530681273
+Without Tactical Policy,0.0,0.0,100.0,0.0,0.0,0.0,-10.0,0.0,5.023999999999999,0.021908902300206343
