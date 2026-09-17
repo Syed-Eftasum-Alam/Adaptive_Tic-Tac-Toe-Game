@@ -1,0 +1,4 @@
+opponent,best_model,best_win_rate,best_balance_model,lowest_balance_error
+random,No Q,98.5,No Tactical,9.3
+heuristic,No Q,83.6,Full,5.700000000000007
+strong,Full,0.0,Full,50.0
