@@ -51,7 +51,7 @@ The first three games remain at Very Easy while enough results are collected. Hi
 
 ## Q-Learning Details
 
-- State: the 3x3 board encoded as a nine-character string.
+- State: the 4x4 board encoded as a nine-character string.
 - Actions: the nine board positions.
 - Learning rate (`alpha`): `0.30`.
 - Discount factor (`gamma`): `0.90`.
